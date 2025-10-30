@@ -1,0 +1,250 @@
+# NPU VGGT 模型推理优化实践
+本文主要介绍VGGT模型基于NPU的推理优化策略，其中包括以下优化点：
+- Cos/Sin算子输入优化
+- 旋转编码计算优化
+  - 支持NPU npu_rotary_mul融合算子
+  - 重复计算消除
+- DPT头位置编码计算优化
+- 支持NPU npu_add_layer_norm融合算子
+- 权重量化
+- 二维卷积核私有格式提前转换
+---
+## 性能优化介绍
+### Cos/Sin算子优化
+**优化原因：** 原网络结构代码中Cos算子和Sin算子的输入数据类型为double，导致这两算子会下发到AI CPU上执行，导致算子性能低。
+
+**优化方式：** 将`vggt/heads/utils.py`文件中make_sincos_pos_embed函数的omega变量数据类型从torch.double修改为torch.bfloat16。
+```python
+'''替换部分
+def _make_sincos_pos_embed(embed_dim: int, pos: torch.Tensor, omega_0: float = 100) -> torch.Tensor:
+    assert embed_dim % 2 == 0
+    device = pos.device
+    omega = torch.arange(embed_dim // 2, dtype=torch.float32 if device.type == "mps" else torch.double, device=device)
+    omega /= embed_dim / 2.0
+    omega = 1.0 / omega_0**omega  # (D/2,)
+
+    pos = pos.reshape(-1)  # (M,)
+    out = torch.einsum("m,d->md", pos, omega)  # (M, D/2), outer product
+
+    emb_sin = torch.sin(out)  # (M, D/2)
+    emb_cos = torch.cos(out)  # (M, D/2)
+
+    emb = torch.cat([emb_sin, emb_cos], dim=1)  # (M, D)
+    return emb.float()
+'''
+#替换后
+def make_sincos_pos_embed(embed_dim: int, pos: torch.Tensor, omega_0: float = 100) -> torch.Tensor:
+    assert embed_dim % 2 == 0
+    device = pos.device
+    omega = torch.arange(embed_dim // 2, dtype=torch.bfloat16, device=device)
+    omega /= embed_dim / 2.0
+    omega = 1.0 / omega_0**omega  # (D/2,)
+
+    pos = pos.reshape(-1)  # (M,)
+    out = torch.einsum("m,d->md", pos, omega)  # (M, D/2), outer product
+
+    emb_sin = torch.sin(out)  # (M, D/2)
+    emb_cos = torch.cos(out)  # (M, D/2)
+
+    emb = torch.cat([emb_sin, emb_cos], dim=1)  # (M, D)
+    return emb
+```
+
+### 旋转编码优化
+#### 融合算子npu_rotary_mul使能
+- **优化原因：** 原网络代码中通过`(token * cos) + (self._rotate_features(tokens) * sin)` 实现rotary操作，Host侧需要下发多个小算子。
+- **优化方式：** 修改`vggt/layers/rope.py`文件中_apply_1d_rope函数，使用`npu_rotary_mul`替换原来的算子实现。
+```python
+'''替换部分
+def __apply_1d_rope(
+        self, tokens: torch.Tensor, positions: torch.Tensor, cos_comp: torch.Tensor, sin_comp: torch.Tensor
+    ) -> torch.Tensor:
+  # Embed positions with frequency components
+  cos = F.embedding(positions, cos_comp)[:, None, :, :]
+  sin = F.embedding(positions, sin_comp)[:, None, :, :]
+
+  # Apply rotation
+  return (tokens * cos) + (self._rotate_features(tokens) * sin)
+'''
+#替换后
+def _apply_1d_rope(
+        self, tokens: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
+    ) -> torch.Tensor:
+  # Apply rotation
+  return torch_npu.npu_rotary_mul(tokens, cos, sin, rotary_mode='half')
+```
+
+#### 冗余操作去除
+- **优化原因：** 在vggt的Attention网络rope模块实现中，每次计算都需要重新计算cos和sin值，存在冗余计算，具体如下： 
+    - `vggt/layers/rope.py`文件中_apply_1d_rope函数通过`cos = F.embedding(positions, cos_comp)[:, None, :, :]` 和`sin = F.embedding(positions, sin_comp)[:, None, :, :]`分别计算cos和sin变量。
+    - `vggt/layers/rope.py`文件中forward函数需要通过max函数计算输入变量positions的最大值。
+    - 每次对q变量和k变量进行rope计算时，都需要分别在垂直维度和水平维度计算cos和sin，并且计算positions的最大值。
+- **优化方式：** 旋转编码计算的输入依赖positions变量，positions变量与输入图片的高度与宽度相关。因此通过建立key为(height, width)的字典，缓存cos变量和sin变量的计算结果和positions的最大值，针对不同输入下同样大小的图片，能够减少重复的计算。
+```python
+'''替换部分
+def __compute_frequency_components(
+        self, dim: int, seq_len: int, device: torch.device, dtype: torch.dtype
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+  cache_key = (dim, seq_len, device, dtype)
+  if cache_key not in self.frequency_cache:
+      # Compute frequency bands
+      exponents = torch.arange(0, dim, 2, device=device).float() / dim
+      inv_freq = 1.0 / (self.base_frequency**exponents)
+
+      # Generate position-dependent frequencies
+      positions = torch.arange(seq_len, device=device, dtype=inv_freq.dtype)
+      angles = torch.einsum("i,j->ij", positions, inv_freq)
+
+      # Compute and cache frequency components
+      angles = angles.to(dtype)
+      angles = torch.cat((angles, angles), dim=-1)
+      cos_components = angles.cos().to(dtype)
+      sin_components = angles.sin().to(dtype)
+      self.frequency_cache[cache_key] = (cos_components, sin_components)
+
+  return self.frequency_cache[cache_key]
+'''
+# 替换后
+def _compute_frequency_components(
+        self, dim: int,  input_positions: torch.tensor, device: torch.device, dtype: torch.dtype,
+        height: None, width: None, batch_size: None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+  if height == None or width == None:
+      seq_len = int(input_positions.max()) + 1
+  else:
+      hw_key = (height, width)
+      if hw_key not in self.max_position_cache:
+        self.max_position_cache[hw_key] = int(input_positions.max()) + 1
+      seq_len = self.max_position_cache[hw_key]
+  cache_key = (dim, seq_len, device, dtype)
+  if cache_key not in self.frequency_cache:
+      # Compute frequency bands
+      exponents = torch.arange(0, dim, 2, device=device).float() / dim
+      inv_freq = 1.0 / (self.base_frequency**exponents)
+
+      # Generate position-dependent frequencies
+      positions = torch.arange(seq_len, device=device, dtype=inv_freq.dtype)
+      angles = torch.einsum("i,j->ij", positions, inv_freq)
+
+      # Compute and cache frequency components
+      angles = angles.to(dtype)
+      angles = torch.cat((angles, angles), dim=-1)
+      cos_components = angles.cos().to(dtype)
+      sin_components = angles.sin().to(dtype)
+      self.frequency_cache[cache_key] = (cos_components, sin_components)
+
+  cos_components, sin_components = self.frequency_cache[cache_key]
+
+  if height == None or width == None or batch_size == None:
+      vertical_cos = F.embedding(input_positions[...,0], cos_components)[:, None, :, :]
+      vertical_sin = F.embedding(input_positions[...,0], sin_components)[:, None, :, :]
+      horizontal_cos = F.embedding(input_positions[...,1], cos_components)[:, None, :, :]
+      horizontal_sin = F.embedding(input_positions[...,1], sin_components)[:, None, :, :]
+      return vertical_cos, vertical_sin, horizontal_cos, horizontal_sin
+
+  sub_cache_key = (height, width)
+  if sub_cache_key not in self.cos_sin_cache:
+      # Embed positions with frequency components
+      vertical_cos = F.embedding(input_positions[...,0], cos_components)[:, None, :, :]
+      vertical_sin = F.embedding(input_positions[...,0], sin_components)[:, None, :, :]
+      horizontal_cos = F.embedding(input_positions[...,1], cos_components)[:, None, :, :]
+      horizontal_sin = F.embedding(input_positions[...,1], sin_components)[:, None, :, :]
+      self.cos_sin_cache[sub_cache_key] = (vertical_cos, vertical_sin, horizontal_cos, horizontal_sin)
+  vertical_cos, vertical_sin, horizontal_cos, horizontal_sin = self.cos_sin_cache[sub_cache_key]
+  return vertical_cos, vertical_sin, horizontal_cos, horizontal_sin
+
+```
+### DPT头位置编码计算优化
+- **优化原因：** VGGT网络在DPT头的实现中，每次计算都需要对输入重新进行位置编码的计算，存在冗余计算。
+-  **优化方式：** 由于位置编码的结果取决于输入图片的大小和token的长度，因此通过建立字典将结果进行缓存的方式把位置编码的结果提前保存，避免冗余计算，减少计算量。
+```python
+'''替换部分
+def __apply_pos_embed(self, x: torch.Tensor, W: int, H: int, ratio: float = 0.1) -> torch.Tensor:
+  patch_w = x.shape[-1]
+  patch_h = x.shape[-2]
+  pos_embed = create_uv_grid(patch_w, patch_h, aspect_ratio=W / H, dtype=x.dtype, device=x.device)
+  pos_embed = position_grid_to_embed(pos_embed, x.shape[1])
+  pos_embed = pos_embed * ratio
+  pos_embed = pos_embed.permute(2, 0, 1)[None].expand(x.shape[0], -1, -1, -1)
+  return x + pos_embed
+'''
+#替换后
+def _apply_pos_embed(self, x: torch.Tensor, W: int, H: int, ratio: float = 0.1) -> torch.Tensor:
+   if (W, H, x.shape) not in self.pos_embed_cache:
+       patch_w = x.shape[-1]
+       patch_h = x.shape[-2]
+       pos_embed = create_uv_grid(patch_w, patch_h, aspect_ratio=W / H, dtype=x.dtype, device=x.device)
+       pos_embed = position_grid_to_embed(pos_embed, x.shape[1])
+       pos_embed = pos_embed * ratio
+       pos_embed = pos_embed.permute(2, 0, 1)[None].expand(x.shape[0], -1, -1, -1)
+       self.pos_embed_cache[(W, H, x.shape)] = pos_embed
+   pos_embed = self.pos_embed_cache[(W, H, x.shape)]
+   return x + pos_embed
+```
+### Add+LayerNorm融合算子
+- **优化原因：** 将小算子替换为融合大算子，提升性能。
+- **优化方式：** 使用融合算子`npu_add_layer_norm`替换原来的算子实现。
+```python
+#替换后
+def vggt_layernorm_forward(self, x: torch.Tensor, residual: Optional[torch.Tensor] = None):
+    if residual is None:
+        return torch_npu.npu_layer_norm_eval(x, self.normalized_shape, self.weight, self.bias, self.eps)
+    else:
+        y, _, _, residual = torch_npu.npu_add_layer_norm(residual, x, self.weight, self.bias, self.eps, additional_output = True)
+        return y, residual
+
+nn.LayerNorm.forward = vggt_layernorm_forward
+```
+### 权重量化
+- **优化原因：** 目前vggt网络的权重使用float数据类型，考虑将vggt网络权重转为bfloat16。
+- **优化方式：** 在加载完模型后，将模型权重转为bfloat16。使用该量化方案后，取得6.62%的性能收益，但会导致相机位姿估算任务精度下降5%。
+<!-- - 量化后相比原模型的性能收益和对应的精度损失 -->
+
+### 卷积核私有格式提前转换
+- **优化原因：** NPU上进行二维卷积操作时需要提前通过Transdata算子将卷积核转为`Fractal_Z`格式，在推理过程中存在数据格式的转换开销，影响模型权重。
+- **优化方式：** 在加载完模型权重后，提前将二维卷积核的数据格式转为`Fractal_Z`，进而避免转换开销的引入。
+```python
+#替换后
+def cast_model_weight(model):
+    def __format_cast(module, class_name):
+        if issubclass(class_name, torch.nn.Conv2d):
+            if module.groups > 1:
+                return
+            if hasattr(module, "weight") and module.weight is not None and \
+                "weight" in dict(module.named_parameters()):
+                module.weight.data = torch_npu.npu_format_cast(module.weight.data, 4)
+        return module
+    def cast_weight(module):
+        current_class = module.__class__
+        module = __format_cast(module, current_class)
+
+        if not module.children:
+            return
+        for sub_module in module.children():
+            if isinstance(sub_module, torch.nn.Module):
+                sub_module = cast_weight(sub_module)
+        return module
+    for _, module in model.named_modules():
+        module = cast_weight(module)
+    return model
+# 推理时
+model = VGGT()
+checkpoint = torch.load(checkpoint_path)
+model.load_state_dict(checkpoint)
+model = model.to(dtype)
+model.to(device).eval()
+model = cast_model_weight(model)#调用cast_model_weight函数，在推理前提前转换卷积核数据格式
+predictions = model(images)
+```
+
+---
+## 性能优化指标
+本方案使用8卡Atlas 800I A2推理产品，输入vggt提供的样例数据(`examples/kitchen`)，包含25张图片，性能指标如下
+|使能方法|推理耗时（ms）|
+|:---:|:---:|
+|Cos\Sin算子优化|1324.83|
+|旋转编码优化|1239.55|
+|DPT头计算优化|1211.26|
+|npu_add_layer_norm融合算子|1208.17|
+|权重量化|1128.18|
+|私有格式提前转换|1121.09|
