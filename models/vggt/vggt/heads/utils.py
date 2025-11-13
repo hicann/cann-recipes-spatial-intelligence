@@ -36,6 +36,7 @@ def position_grid_to_embed(pos_grid: torch.Tensor, embed_dim: int, omega_0: floa
 
     return emb.view(H, W, embed_dim)  # [H, W, D]
 
+
 def make_sincos_pos_embed(embed_dim: int, pos: torch.Tensor, omega_0: float = 100) -> torch.Tensor:
     """
     This function generates a 1D positional embedding from a given grid using sine and cosine functions.

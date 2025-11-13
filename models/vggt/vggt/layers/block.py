@@ -32,7 +32,8 @@ def vggt_layernorm_forward(self, x: torch.Tensor, residual: Optional[torch.Tenso
     if residual is None:
         return torch_npu.npu_layer_norm_eval(x, self.normalized_shape, self.weight, self.bias, self.eps)
     else:
-        y, _, _, residual = torch_npu.npu_add_layer_norm(residual, x, self.weight, self.bias, self.eps, additional_output = True)
+        y, _, _, residual = torch_npu.npu_add_layer_norm(residual, x, self.weight, \
+                self.bias, self.eps, additional_output=True)
         return y, residual
 
 nn.LayerNorm.forward = vggt_layernorm_forward

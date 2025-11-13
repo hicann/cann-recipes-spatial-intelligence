@@ -46,13 +46,13 @@
             +--- models
             +--- utils
     ```
-## Quick Start
+## Performance Measurement
 This repo provides script to test the functionality and the performance of VGGT model on NPU.
 1. Before executing the test scripts, refer to the Ascend Community CANN installation tutorial to set environment variables:
     ```shell 
     source /usr/local/Ascend/ascend-toolkit/set_env.sh 
     ```
-2. Run the inference script:
+2. Run the inference script and the output presents the average inference time of vggt model.
    ```shell
     python demo_infer.py --ckpt "ckpt/model.pt"
    ```

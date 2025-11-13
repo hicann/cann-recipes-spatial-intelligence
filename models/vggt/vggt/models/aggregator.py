@@ -9,11 +9,12 @@
 # LICENSE file in the root directory of this source tree.
 
 import logging
+from typing import Optional, Tuple, Union, List, Dict, Any
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
-from typing import Optional, Tuple, Union, List, Dict, Any
 
 from vggt.layers import PatchEmbed
 from vggt.layers.block import Block

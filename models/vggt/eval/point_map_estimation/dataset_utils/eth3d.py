@@ -156,7 +156,7 @@ class ETH3D:
     def _read_images(path):
         extrinsics = {}      # image_name -> (T_world2cam, cam_id)
         with open(path) as f:
-            lines = [l for l in f.readlines() if l and not l.startswith('#')]
+            lines = [line for line in f.readlines() if line and not line.startswith('#')]
         for i in range(0, len(lines), 2):
             toks = lines[i].strip().split()
             q = list(map(float, toks[1:5]))
