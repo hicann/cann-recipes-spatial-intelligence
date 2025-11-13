@@ -15,7 +15,7 @@
     conda create -n vggt python==3.11.13
     conda activate vggt
     pip3 install torch==2.1.0
-    pip3 install torch-npu==2.1.0.post13
+    pip3 install torch_npu==2.1.0.post13
     ```
 ### 网络模型代码准备
 - 本仓库依赖[VGGT](https://github.com/facebookresearch/vggt/tree/main)的开源仓库代码。

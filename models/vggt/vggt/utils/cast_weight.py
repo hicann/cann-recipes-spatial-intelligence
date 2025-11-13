@@ -8,20 +8,23 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 import torch
 import torch_npu
+
+
 def cast_model_weight(model):
     def __format_cast(module, class_name):
         if issubclass(class_name, torch.nn.Conv2d):
             if module.groups > 1:
-                return
+                return _
             if hasattr(module, "weight") and module.weight is not None and \
                 "weight" in dict(module.named_parameters()):
                 module.weight.data = torch_npu.npu_format_cast(module.weight.data, 4)
         return module
+
     def cast_weight(module):
         current_class = module.__class__
         module = __format_cast(module, current_class)
         if not module.children:
-            return
+            return _
         for sub_module in module.children():
             if isinstance(sub_module, torch.nn.Module):
                 sub_module = cast_weight(sub_module)

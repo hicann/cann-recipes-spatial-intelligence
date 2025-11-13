@@ -55,7 +55,7 @@ class Attention(nn.Module):
         self.proj_drop = nn.Dropout(proj_drop)
         self.rope = rope
 
-    def forward(self, x: Tensor, pos=None, height = None, width = None) -> Tensor:
+    def forward(self, x: Tensor, pos=None, height=None, width=None) -> Tensor:
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         q, k, v = qkv.unbind(0)
@@ -78,7 +78,7 @@ class Attention(nn.Module):
 
 
 class MemEffAttention(Attention):
-    def forward(self, x: Tensor, attn_bias=None, pos=None, height = None, width = None) -> Tensor:
+    def forward(self, x: Tensor, attn_bias=None, pos=None, height=None, width=None) -> Tensor:
         assert pos is None
         if not XFORMERS_AVAILABLE:
             if attn_bias is not None:

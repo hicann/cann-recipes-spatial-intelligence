@@ -18,12 +18,13 @@
 #         https://github.com/naver-ai/rope-vit
 
 
+from typing import Dict, Tuple, List
+
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch_npu
-from typing import Dict, Tuple
 
 
 class PositionGetter:
@@ -91,23 +92,23 @@ class RotaryPositionEmbedding2D(nn.Module):
         self.max_position_cache: Dict[Tuple, int] = {}
 
     def _compute_frequency_components(
-        self, dim: int,  input_positions: torch.tensor, device: torch.device, dtype: torch.dtype,
-        height: None, width: None, batch_size: None
+        self, token_attribute: List, input_positions: torch.tensor, height: None, width: None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Computes frequency components for rotary embeddings.
 
         Args:
-            dim: Feature dimension (must be even).
+            token_attribute: [dim: Feature dimension (must be even), 
+                device: Target device for computations, 
+                dtype: Data type for the computed tensors.]
             input_positions: Position indices.
-            device: Target device for computations.
-            dtype: Data type for the computed tensors.
             height: height of the image
             width: height of the image
-
         Returns:
             Tuple of (cosine, sine) tensors for frequency components.
         """
-        if height == None or width == None:
+        dim, device, dtype = token_attribute[0], token_attribute[1], token_attribute[2]
+        batch_size = input_positions.shape[0]
+        if height is None or width is None:
             seq_len = int(input_positions.max()) + 1
         else:
             hw_key = (height, width)
@@ -129,22 +130,24 @@ class RotaryPositionEmbedding2D(nn.Module):
             sin_components = angles.sin().to(dtype)
             self.frequency_cache[cache_key] = (cos_components, sin_components)
         cos_components, sin_components = self.frequency_cache[cache_key]
-        if height == None or width == None or batch_size == None:
-            vertical_cos = F.embedding(input_positions[...,0], cos_components)[:, None, :, :]
-            vertical_sin = F.embedding(input_positions[...,0], sin_components)[:, None, :, :]
-            horizontal_cos = F.embedding(input_positions[...,1], cos_components)[:, None, :, :]
-            horizontal_sin = F.embedding(input_positions[...,1], sin_components)[:, None, :, :]
-            return vertical_cos, vertical_sin, horizontal_cos, horizontal_sin
+        if height is None or width is None or batch_size is None:
+            vertical_cos = F.embedding(input_positions[..., 0], cos_components)[:, None, :, :]
+            vertical_sin = F.embedding(input_positions[..., 0], sin_components)[:, None, :, :]
+            horizontal_cos = F.embedding(input_positions[..., 1], cos_components)[:, None, :, :]
+            horizontal_sin = F.embedding(input_positions[..., 1], sin_components)[:, None, :, :]
+            cos_sin_output = [vertical_cos, vertical_sin, horizontal_cos, horizontal_sin]
+            return cos_sin_output
         sub_cache_key = (height, width)
         if sub_cache_key not in self.cos_sin_cache:
             # Embed positions with frequency components
-            vertical_cos = F.embedding(input_positions[...,0], cos_components)[:, None, :, :]
-            vertical_sin = F.embedding(input_positions[...,0], sin_components)[:, None, :, :]
-            horizontal_cos = F.embedding(input_positions[...,1], cos_components)[:, None, :, :]
-            horizontal_sin = F.embedding(input_positions[...,1], sin_components)[:, None, :, :]
+            vertical_cos = F.embedding(input_positions[..., 0], cos_components)[:, None, :, :]
+            vertical_sin = F.embedding(input_positions[..., 0], sin_components)[:, None, :, :]
+            horizontal_cos = F.embedding(input_positions[..., 1], cos_components)[:, None, :, :]
+            horizontal_sin = F.embedding(input_positions[..., 1], sin_components)[:, None, :, :]
             self.cos_sin_cache[sub_cache_key] = (vertical_cos, vertical_sin, horizontal_cos, horizontal_sin)
         vertical_cos, vertical_sin, horizontal_cos, horizontal_sin = self.cos_sin_cache[sub_cache_key]
-        return vertical_cos, vertical_sin, horizontal_cos, horizontal_sin
+        cos_sin_output = [vertical_cos, vertical_sin, horizontal_cos, horizontal_sin]
+        return cos_sin_output
 
     @staticmethod
     def _rotate_features(x: torch.Tensor) -> torch.Tensor:
@@ -196,12 +199,13 @@ class RotaryPositionEmbedding2D(nn.Module):
         # Validate inputs
         assert tokens.size(-1) % 2 == 0, "Feature dimension must be even"
         assert positions.ndim == 3 and positions.shape[-1] == 2, "Positions must have shape (batch_size, n_tokens, 2)"
-        assert height != None and width != None
         # Compute feature dimension for each spatial direction
         feature_dim = tokens.size(-1) // 2
+        token_attribute = [feature_dim, tokens.device, tokens.dtype]
         # Get frequency components
-        vertical_cos, vertical_sin, horizontal_cos, horizontal_sin = self._compute_frequency_components(feature_dim, \
-                    positions, tokens.device, tokens.dtype, height, width, positions.shape[0])
+        cos_sin_output = self._compute_frequency_components(token_attribute, positions, height, width)
+        vertical_cos, vertical_sin, horizontal_cos, horizontal_sin \
+            = cos_sin_output[0], cos_sin_output[1], cos_sin_output[2], cos_sin_output[3]
         # Split features for vertical and horizontal processing
         vertical_features, horizontal_features = tokens.chunk(2, dim=-1)
         # Apply RoPE separately for each dimension

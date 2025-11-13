@@ -9,6 +9,8 @@
 import os
 import argparse
 import time
+import logging
+
 import torch
 import torch_npu
 from torch_npu.contrib import transfer_to_npu
@@ -18,6 +20,8 @@ from vggt.utils.load_fn import load_and_preprocess_images
 from vggt.utils.cast_weight import cast_model_weight
 from eval.general_utils import fix_random_seed
 
+logging.basicConfig(level=logging.INFO)
+
 def get_all_files_paths(dir_path):
     file_paths = []
     for root, _, files in os.walk(dir_path):
@@ -26,15 +30,17 @@ def get_all_files_paths(dir_path):
             file_paths.append(file_path)
     return file_paths
 
+
 def sync_and_get_time(start_time=None, use_syn=True):
     if use_syn:
         torch.npu.synchronize()
     timestamp = time.time()
     if start_time is not None:
         timestamp -= start_time
-        print(f"VGGT inference time cost is: {timestamp*1000:.2f} ms" )
+        logging.info(f"VGGT inference time cost is: {timestamp*1000:.2f} ms")
         return timestamp
     return timestamp
+
 
 def quick_start(pt_path, image_paths):
     fix_random_seed(42)
@@ -44,7 +50,7 @@ def quick_start(pt_path, image_paths):
         raise ValueError("CUDA is not available. Check your environment.")
     dtype = torch.bfloat16
     model = VGGT()
-    checkpoint_path = pt_path  # Path to the model checkpoint
+    checkpoint_path = pt_path 
     checkpoint = torch.load(checkpoint_path)
     model.load_state_dict(checkpoint)
     model = model.to(dtype)
@@ -56,14 +62,16 @@ def quick_start(pt_path, image_paths):
     images = load_and_preprocess_images(image_names).to(device)
     with torch.no_grad():
         with torch.cuda.amp.autocast(dtype=dtype):
-            predictions = model(images) #warm up
+            predictions = model(images)
             exec_time_list = []
             for steps in range(6):
                 start_time = sync_and_get_time()
                 predictions = model(images)
                 exec_time = sync_and_get_time(start_time)
                 exec_time_list.append(exec_time)
-            print(f"The execution time of inferences:{exec_time_list} and the average time is {sum(exec_time_list)/len(exec_time_list)}" )
+            logging.info(f"The execution time of inferences: {exec_time_list} and \
+                    the average time is {sum(exec_time_list) / len(exec_time_list)}")
+
 
 def parse_args():
     parser = argparse.ArgumentParser("VGGT quick start.", add_help=False)
@@ -71,9 +79,11 @@ def parse_args():
     parser.add_argument("--images_path", default="examples/kitchen/images", help="dataset location")
     return parser.parse_args()
 
+
 def main():
     args = parse_args()
     quick_start(args.ckpt, args.images_path)
+
 
 if __name__ == "__main__":
     torch.npu.set_compile_mode(jit_compile=False)
