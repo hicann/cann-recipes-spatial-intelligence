@@ -18,7 +18,8 @@
 #define INT64 unsigned long long
 #define MAXINT 2147483647
 
-float calculateSignedArea2(float* a, float* b, float* c) {
+float calculateSignedArea2(float* a, float* b, float* c)
+{
     return ((c[0] - a[0]) * (b[1] - a[1]) - (b[0] - a[0]) * (c[1] - a[1]));
 }
 
@@ -43,13 +44,15 @@ void calculateBarycentricCoordinate(float* a, float* b, float* c, float* p,
     barycentric[2] = gamma;
 }
 
-bool isBarycentricCoordInBounds(float* barycentricCoord) {
+bool isBarycentricCoordInBounds(float* barycentricCoord)
+{
     return barycentricCoord[0] >= 0.0 && barycentricCoord[0] <= 1.0 &&
            barycentricCoord[1] >= 0.0 && barycentricCoord[1] <= 1.0 &&
            barycentricCoord[2] >= 0.0 && barycentricCoord[2] <= 1.0;
 }
 
-std::vector<std::vector<torch::Tensor>> build_hierarchy(std::vector<torch::Tensor> view_layer_positions, std::vector<torch::Tensor> view_layer_normals, int num_level, int resolution);
+std::vector<std::vector<torch::Tensor>> build_hierarchy(std::vector<torch::Tensor> view_layer_positions,
+    std::vector<torch::Tensor> view_layer_normals, int num_level, int resolution);
 
 std::vector<std::vector<torch::Tensor>> build_hierarchy_with_feat(
     std::vector<torch::Tensor> view_layer_positions,

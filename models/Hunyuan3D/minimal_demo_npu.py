@@ -26,6 +26,9 @@ import argparse
 import os
 
 import torch
+import torch_npu
+import torchair
+import torch._dynamo
 from PIL import Image
 from torch_npu.contrib import transfer_to_npu
 
@@ -43,11 +46,18 @@ def main():
     )
     
     parser.add_argument('--model_path', type=str, default='tencent/Hunyuan3D-2', help="模型路径")
-    parser.add_argument('--mutiview', action='store_true', default=False, help="多视角输入")
-    parser.add_argument('--face_reduce', action='store_false', default=True, help="减少mesh面片数量")
-
+    parser.add_argument('--multiview', action='store_true', default=False, help="多视角输入")
+    parser.add_argument('--face_reduce', action='store_false', default=False, help="减少mesh面片数量")
+    parser.add_argument('--full_graph', action='store_false', default=False, help="开启图模式")
     args = parser.parse_args()
-    if args.mutiview:
+    if args.full_graph:
+        config = torchair.CompilerConfig()
+        config.experimental_config.keep_inference_input_mutations = True
+        config.experimental_config.frozen_parameter = True
+        config.experimental_config.tiling_schedule_optimize = True
+        npu_backend = torchair.get_npu_backend(compiler_config=config)
+        
+    if args.multiview:
         images = {
             "front": "assets/example_mv_images/1/front.png",
             "left": "assets/example_mv_images/1/left.png",
@@ -66,6 +76,11 @@ def main():
             subfolder='hunyuan3d-dit-v2-mv',
             variant='fp16'
         )
+        if args.full_graph:
+            pipeline.model = torch.compile(pipeline.model, 
+            dynamic=False, backend=npu_backend, fullgraph=True)
+            pipeline.vae.geo_decoder = torch.compile(pipeline.vae.geo_decoder, 
+            dynamic=False, backend=npu_backend, fullgraph=True)
         mesh = pipeline(
             image=images,
             num_inference_steps=50,
@@ -77,6 +92,11 @@ def main():
 
     else:
         pipeline_shapegen = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(args.model_path)
+        if args.full_graph:
+            pipeline_shapegen.model = torch.compile(pipeline_shapegen.model, 
+            dynamic=False, backend=npu_backend, fullgraph=True)
+            pipeline_shapegen.vae.geo_decoder = torch.compile(pipeline_shapegen.vae.geo_decoder, 
+            dynamic=False, backend=npu_backend, fullgraph=True)
         image_path = 'assets/demo.png'
         image = Image.open(image_path).convert("RGBA")
         if image.mode == 'RGB':
@@ -87,9 +107,13 @@ def main():
     
     if args.face_reduce:
         mesh = mesh.simplify_quadric_decimation(face_count=20000) #减少面片数量
-    pipeline_texgen = Hunyuan3DPaintPipeline.from_pretrained(args.model_path)
-    mesh = pipeline_texgen(mesh, image=image)
-    mesh.export('demo.glb')
+    pipeline_texgen = Hunyuan3DPaintPipeline.from_pretrained(args.model_path, subfolder='hunyuan3d-paint-v2-0')
+    if args.multiview:
+        mesh = pipeline_texgen(mesh, image=list(image.values()))
+        mesh.export('demo_mv.glb')
+    else:
+        mesh = pipeline_texgen(mesh, image=image)
+        mesh.export('demo.glb')
 
 if __name__ == '__main__':
     main()

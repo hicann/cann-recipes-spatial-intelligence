@@ -28,6 +28,7 @@ import torch
 import torch.nn.functional as F
 import trimesh
 from PIL import Image
+import mesh_processor
 
 from .camera_utils import (
     transform_pos,
@@ -35,7 +36,6 @@ from .camera_utils import (
     get_orthographic_projection_matrix,
     get_perspective_projection_matrix,
 )
-from .mesh_processor import meshVerticeInpaint
 from .mesh_utils import load_mesh, save_mesh
 from .rasterizer import rasterize, interpolate
 
@@ -355,6 +355,7 @@ class MeshRender():
         keep_alpha,
         filter_mode
     ):
+        self.device = pos.device
         pos_clip = transform_pos(mvp, pos)
         if isinstance(resolution, (int, float)):
             resolution = [resolution, resolution]
@@ -439,8 +440,9 @@ class MeshRender():
         normalize_rgb=True,
         return_type='th'
     ):
-
         pos_camera, pos_clip = self.get_pos_from_mvp(elev, azim, camera_distance, center)
+        self.device = pos_camera.device
+        
         if resolution is None:
             resolution = self.default_resolution
         if isinstance(resolution, (int, float)):
@@ -814,12 +816,12 @@ class MeshRender():
 
         vtx_pos, pos_idx, vtx_uv, uv_idx = self.get_mesh()
 
-        texture_np, mask = meshVerticeInpaint(
-            texture_np, mask, vtx_pos, vtx_uv, pos_idx, uv_idx)
+        texture_np, mask = mesh_processor.meshVerticeInpaint(texture_np, mask, 
+                                                             vtx_pos, vtx_uv, pos_idx, uv_idx)
 
         texture_np = cv2.inpaint(
-            (texture_np *255).astype(np.uint8),
-            255 -mask,
+            (texture_np * 255).astype(np.uint8),
+            255 - mask,
             3,
             cv2.INPAINT_NS)
 
