@@ -40,7 +40,7 @@ def npu_fia(q, k, v, scale):
 class CrossAttentionProcessor:
     def __call__(self, attn, q, k, v):
         batch_size, num_head, seq_len, head_dim = q.shape
-        out = npu_fia(q, k, v, scale=(1 / math.sqrt(num_head)))
+        out = npu_fia(q, k, v, scale=(1 / math.sqrt(head_dim)))
         return out
 
 

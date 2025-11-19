@@ -1,13 +1,10 @@
-ninja
 pybind11
 argparse
 diffusers
 einops
 opencv-python
 numpy
-torch
 transformers
-torchvision
 omegaconf
 tqdm
 trimesh

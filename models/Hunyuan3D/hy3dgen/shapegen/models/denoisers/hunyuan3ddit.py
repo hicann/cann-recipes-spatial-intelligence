@@ -44,7 +44,7 @@ if os.environ.get('USE_SAGEATTN', '0') == '1':
 
 def attention(q: Tensor, k: Tensor, v: Tensor, **kwargs) -> Tensor:
     batch_size, num_head, seq_len, head_dim = q.shape
-    x = npu_fia(q, k, v, scale=(1 / math.sqrt(num_head)))
+    x = npu_fia(q, k, v, scale=(1 / math.sqrt(head_dim)))
     x = rearrange(x, "B H L D -> B L (H D)")
     return x
 

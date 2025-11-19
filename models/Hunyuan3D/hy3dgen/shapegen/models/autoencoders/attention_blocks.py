@@ -354,7 +354,7 @@ class QKVMultiheadAttention(nn.Module):
         q, k, v = map(lambda t: rearrange(t, 'b n h d -> b h n d', h=self.heads), (q, k, v))
         batch_size, num_head, seq_len, head_dim = q.shape
         out = scaled_dot_product_attention(
-            q, k, v, scale=1 / math.sqrt(num_head)
+            q, k, v, scale=1 / math.sqrt(head_dim)
         ).transpose(1, 2).reshape(bs, n_ctx, -1)
         return out
 
