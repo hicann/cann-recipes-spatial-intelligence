@@ -111,9 +111,9 @@ python minimal_demo_npu.py
 ``` minimal_demo_npu.py```采用默认设置执行单图像推理，运行不同配置可参考以下脚本执行：
 
 ```bash
-python minimal_demo_npu.py --model_path tencent/Hunyuan3D-2 --mutiview --face_reduce
+python minimal_demo_npu.py --model_path tencent/Hunyuan3D-2 --multiview --face_reduce
 ```
-```model_path``` 选择模型路径，```mutiview``` 设置是否采用多视角推理，```reduce_face``` 设置是否减少三角面片。
+```model_path``` 选择模型路径，```multiview``` 设置是否采用多视角推理，```reduce_face``` 设置是否减少三角面片。
 
 ### 推理步骤介绍
 
