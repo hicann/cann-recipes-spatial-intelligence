@@ -89,6 +89,7 @@ if __name__ == '__main__':
     model = VGGT()
     pt_path = args.ckpt
     model.load_state_dict(torch.load(pt_path))
+    model = model.to(dtype)
     model = model.to(device).eval()
     model = cast_model_weight(model)
     # Load dataset

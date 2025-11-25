@@ -217,6 +217,7 @@ if __name__ == "__main__":
     checkpoint = torch.load(checkpoint_path)
     model.load_state_dict(checkpoint)
     model.to(device).eval()
+    model = model.to(dtype)
     model = cast_model_weight(model)
     torch.npu.set_compile_mode(jit_compile=False)
     main(model, device, args, dtype, SEEN_CATEGORIES)

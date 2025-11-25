@@ -4,14 +4,14 @@
    
     Download the `Ascend-cann-toolkit_${version}_linux-${arch}.run` and `Ascend-cann-kernels-${chip_type}_${version}_linux-${arch}.run` packages from the [CANN Software Package Download Page](https://www.hiascend.com/developer/download/community/result?module=cann&cann=8.0.RC3.beta1) and install them by referring to the [CANN Installation Guide](https://www.hiascend.com/document/detail/zh/canncommercial/80RC3/softwareinst/instg/instg_0007.html?Mode=PmIns&OS=Ubuntu&Software=cannToolKit).
 
-2. The required versions of torch and torch_npu are 2.1.0 and 2.1.0.post13.
+2. The required versions of torch and torch_npu are 2.1.0 and 2.1.0.post12.
 
-    Download the binary package from [Ascend Extension for PyTorch](https://www.hiascend.com/document/detail/zh/Pytorch/710/configandinstg/instg/insg_0004.html) and install torch and torch_npu.
+    Download the binary package from [Ascend Extension for PyTorch](https://www.hiascend.com/document/detail/zh/Pytorch/700/configandinstg/instg/insg_0004.html) and install torch and torch_npu.
     ```shell
     conda create -n vggt python==3.11.13
     conda activate vggt
     pip3 install torch==2.1.0
-    pip3 install torch-npu==2.1.0.post13
+    pip3 install torch-npu==2.1.0.post12
     ```
 
 ## VGGT Model Preparation
@@ -25,7 +25,11 @@
    ```
 3. Copy the code from the VGGT repository to this project directory in non-overwrite mode:
     ```shell
-    cp -rn vggt/vggt cann-recipes-spatial-intelligence/models/vggt/vggt 
+    cp -r vggt/examples cann-recipes-spatial-intelligence/models/vggt/
+    cp -rn vggt/vggt/dependency cann-recipes-spatial-intelligence/models/vggt/vggt/dependency
+    cp -rn vggt/vggt/heads cann-recipes-spatial-intelligence/models/vggt/vggt/
+    cp -rn vggt/vggt/layers cann-recipes-spatial-intelligence/models/vggt/vggt/
+    cp -rn vggt/vggt/utils cann-recipes-spatial-intelligence/models/vggt/vggt/ 
     ```
 4. Install Python dependencies:
     ```shell
@@ -34,7 +38,7 @@
 5. Download [VGGT model weights](https://huggingface.co/spaces/facebook/vggt) and copy it to the local path `ckpt`.
     ```
     VGGT
-        +--- datasets
+        +--- examples
         +--- demo_infer.py
         +--- eval
         +--- ckpt
@@ -64,7 +68,7 @@ Since the full dataste of benchmark is large, we can initially test the accuranc
 ### Dataset Preparation:
 1. Download data `CO3D_apple.zip` and data `CO3D_backpack.zip` from [CO3D website](https://ai.meta.com/datasets/co3d-downloads/) and unzip them to `datasets/co3d/co3d_data/`.
     ```
-    vggt
+    VGGT
         +--- datasets
             +--- co3d
                 +--- co3d_data

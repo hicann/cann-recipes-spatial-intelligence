@@ -115,7 +115,7 @@ def comput_one_scan(scanid,             # the scan id to be computed
     return mean_d2s, mean_s2d, over_all
 
 
-def compute_scans(scans, pred_dir, gt_dir):
+def compute_scans(scans, pred_dir, gt_dir, **kargs):
     t1 = time.time()
     acc, comp, overall = [], [], []
     for scan in scans:

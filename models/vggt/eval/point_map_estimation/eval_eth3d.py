@@ -138,6 +138,7 @@ if __name__ == "__main__":
     checkpoint = torch.load(checkpoint_path)
     model.load_state_dict(checkpoint)
     model.to(device).eval()
+    model = model.to(dtype)
     model = cast_model_weight(model)
     resolution = (518, 392)
     # Load dataset

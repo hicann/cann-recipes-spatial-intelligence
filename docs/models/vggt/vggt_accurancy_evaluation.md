@@ -5,7 +5,7 @@
 ## 数据集准备
 - 论文在相机位姿估计、点云三维重建和深度估计这三个任务上分别使用了Co3D数据集、ETH3D数据集和DTU数据集，按照下列数据集链接下载对应数据集
   - Co3D 数据集下载链接：[Co3D](https://ai.meta.com/datasets/co3d-downloads/)
-    - 考虑到Co3D数据集规模庞大，可按需下载：直接选取[SEEN_CATEGORIES](./pose_evaluation/dataset_prepare/categories.py)列表中列出的类别，或直接编辑该列表，以精准控制数据规模。
+    - 考虑到Co3D数据集规模庞大，可按需下载：直接选取[SEEN_CATEGORIES](https://gitcode.com/cann/cann-recipes-spatial-intelligence/blob/master/models/vggt/eval/pose_evaluation/dataset_prepare/categories.py)列表中列出的类别，或直接编辑该列表，以精准控制数据规模。
   - ETH3D 数据集下载链接：[ETH3D](https://www.eth3d.net/datasets)
     1. 下载High-res multi-view下Training data中的[multi_view_training_dslr_jpg](https://www.eth3d.net/data/multi_view_training_dslr_jpg.7z)。
     2. 下载High-res multi-view下Training data中**各类别**的真值深度值数据，如courtyard类别下载[courtyard_dslr_depth](https://www.eth3d.net/data/courtyard_dslr_depth.7z)。
@@ -21,23 +21,22 @@
                 +--- apple_000.zip
                 +--- apple_001.zip
                 ...
-          +--- ETH3D
-                +--- multi_view_training_dslr_jpg
-                      +--- courtyard
-                            +--- dslr_calibration_jpg
-                            +--- images
-                            +--- ground_truth_depth
-                      +--- delivery_area
-                      ...
-          +--- DTU
-                +--- dtu_testing
-                      +--- Depths_raw
-                      +--- scan1
-                      ...
+          +--- multi_view_training_dslr_jpg
+                +--- courtyard
+                      +--- dslr_calibration_jpg
+                      +--- images
+                      +--- ground_truth_depth
+                +--- delivery_area
+                ...
+          +--- dtu_testing
+                +--- Depths_raw
                 +--- Points
                 +--- ObsMask
+                +--- scan1
+                ...
     +--- eval
     +--- demo_gradio.py
+    +--- demo_infer.py
     +--- ckpt
     +--- vggt
   ```
@@ -72,8 +71,7 @@
    ```shell
    export VGGT_DIR=$(pwd)
    cd eval/pose_evaluation
-   python eval_co3d.py --co3d_dir $VGGT_DIR/datasets/co3d/co3d_data/
-    --co3d_anno_dir $VGGT_DIR/datasets/co3d/co3d_anno/  --ckpt $VGGT_DIR/ckpt/model.pt
+   python eval_co3d.py --co3d_dir $VGGT_DIR/datasets/co3d/co3d_data/ --co3d_anno_dir $VGGT_DIR/datasets/co3d/co3d_anno/  --ckpt $VGGT_DIR/ckpt/model.pt
    ```
 ### 点云三维重建
 1. **点云重建评测脚本运行**：运行eval_eth3d.py 进行点云三维重建任务精度测量

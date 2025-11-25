@@ -122,7 +122,7 @@ def extract_pts3d(criterion, data, pred_result, use_proj):
             pts = point_map_by_unprojection[j]
             conf = depth_conf[0, j].to(torch.float).cpu().data.numpy()
         else:
-            pts = pred_pts[j].cpu().numpy()[0]
+            pts = pred_pts[j].to(torch.float).cpu().numpy()[0]
             conf = preds[j]["conf"].to(torch.float).cpu().data.numpy()[0]
 
         pts_gt = gt_pts[j].detach().to(torch.float).cpu().numpy()[0]
