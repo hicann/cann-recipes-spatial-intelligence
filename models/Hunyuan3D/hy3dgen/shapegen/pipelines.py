@@ -16,6 +16,7 @@ import copy
 import importlib
 import inspect
 import os
+import time
 from typing import List, Optional, Union
 
 import numpy as np
@@ -740,6 +741,8 @@ class Hunyuan3DDiTFlowMatchingPipeline(Hunyuan3DDiTPipeline):
             # logger.info(f'Using guidance embed with scale {guidance_scale}')
 
         with synchronize_timer('Diffusion Sampling'):
+            torch.npu.synchronize()
+            prev_time = time.time()
             for i, t in enumerate(tqdm(timesteps, disable=not enable_pbar, desc="Diffusion Sampling:")):
                 # expand the latents if we are doing classifier free guidance
                 if do_classifier_free_guidance:
@@ -763,7 +766,9 @@ class Hunyuan3DDiTFlowMatchingPipeline(Hunyuan3DDiTPipeline):
                 if callback is not None and i % callback_steps == 0:
                     step_idx = i // getattr(self.scheduler, "order", 1)
                     callback(step_idx, t, outputs)
-
+        torch.npu.synchronize()
+        step_time = time.time() - prev_time
+        self.last_step_time = step_time
         return self._export(
             latents,
             output_type,

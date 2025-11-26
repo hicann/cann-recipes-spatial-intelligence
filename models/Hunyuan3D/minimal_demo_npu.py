@@ -24,6 +24,8 @@
 
 import argparse
 import os
+import time
+import logging
 
 import torch
 import torch_npu
@@ -36,6 +38,7 @@ from hy3dgen.rembg import BackgroundRemover
 from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
 from hy3dgen.texgen import Hunyuan3DPaintPipeline
 
+logging.basicConfig(level=logging.NOTSET)
 
 torch.npu.set_compile_mode(jit_compile=False)
 torch.npu.config.allow_internal_format = False
@@ -47,8 +50,8 @@ def main():
     
     parser.add_argument('--model_path', type=str, default='tencent/Hunyuan3D-2', help="模型路径")
     parser.add_argument('--multiview', action='store_true', default=False, help="多视角输入")
-    parser.add_argument('--face_reduce', action='store_false', default=False, help="减少mesh面片数量")
-    parser.add_argument('--full_graph', action='store_false', default=False, help="开启图模式")
+    parser.add_argument('--face_reduce', action='store_true', default=False, help="减少mesh面片数量")
+    parser.add_argument('--full_graph', action='store_true', default=False, help="开启图模式")
     args = parser.parse_args()
     if args.full_graph:
         config = torchair.CompilerConfig()
@@ -71,17 +74,17 @@ def main():
                 image = rembg(image)
             images[key] = image
 
-        pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+        pipeline_shapegen = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
             args.model_path+"mv",
             subfolder='hunyuan3d-dit-v2-mv',
             variant='fp16'
         )
         if args.full_graph:
-            pipeline.model = torch.compile(pipeline.model, 
+            pipeline_shapegen.model = torch.compile(pipeline_shapegen.model, 
             dynamic=False, backend=npu_backend, fullgraph=True)
-            pipeline.vae.geo_decoder = torch.compile(pipeline.vae.geo_decoder, 
+            pipeline_shapegen.vae.geo_decoder = torch.compile(pipeline_shapegen.vae.geo_decoder, 
             dynamic=False, backend=npu_backend, fullgraph=True)
-        mesh = pipeline(
+        mesh = pipeline_shapegen(
             image=images,
             num_inference_steps=50,
             octree_resolution=380,
@@ -103,17 +106,33 @@ def main():
             rembg = BackgroundRemover()
             image = rembg(image)
 
-        mesh = pipeline_shapegen(image=image)[0]
+        mesh = pipeline_shapegen(
+            image=image,
+            num_inference_steps=50,
+            octree_resolution=380,
+            num_chunks=20000,
+            generator=torch.manual_seed(12345),
+            output_type='trimesh'
+        )[0]
     
     if args.face_reduce:
         mesh = mesh.simplify_quadric_decimation(face_count=20000) #减少面片数量
     pipeline_texgen = Hunyuan3DPaintPipeline.from_pretrained(args.model_path, subfolder='hunyuan3d-paint-v2-0')
+    torch.npu.synchronize()
+    texgen_time = time.time()
     if args.multiview:
-        mesh = pipeline_texgen(mesh, image=list(image.values()))
+        mesh = pipeline_texgen(mesh, image=list(images.values()))
+        torch.npu.synchronize()
+        texgen_final_time = time.time() - texgen_time
         mesh.export('demo_mv.glb')
     else:
         mesh = pipeline_texgen(mesh, image=image)
+        torch.npu.synchronize()
+        texgen_final_time = time.time() - texgen_time
         mesh.export('demo.glb')
-
+    logging.info(f"DIT扩散时长为{pipeline_shapegen.last_step_time:.3f}s")
+    vol_decoder = pipeline_shapegen.vae.volume_decoder
+    logging.info(f"VAE解码时长为{vol_decoder.last_step_time_vae:.3f}s")
+    logging.info(f"texgen渲染时长为{texgen_final_time:.3f}s")
 if __name__ == '__main__':
     main()

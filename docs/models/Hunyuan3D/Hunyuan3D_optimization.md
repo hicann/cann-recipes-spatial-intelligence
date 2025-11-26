@@ -297,7 +297,7 @@ texture_np, mask = mesh_processor.meshVerticeInpaint(
 
 ## 性能优化指标
 ### shapegen性能优化指标
-本方案使用1卡Atlas 800I A2推理产品，输入hunyuan3D 2.0 提供的样例数据(`assets/example_images/004.png`)，性能指标如下
+本方案使用1卡Atlas 800I A2推理产品，输入hunyuan3D 2.0 提供的样例数据(`assets/example_images/004.png`)，在扩散步数为num_inference_steps=100（minimal_demo_npu.py第89行与111行）情况下,性能指标如下
 |使能方法|DIT 扩散耗时（s）|VAE 生成耗时（s）|
 |:---:|:---:|:---:|
 |baseline|21.63|17.98|
@@ -305,7 +305,7 @@ texture_np, mask = mesh_processor.meshVerticeInpaint(
 |算子优化+图模式编译|19.00|16.68|
 
 ### texgen性能优化指标
-本方案使用1卡Atlas 800I A2推理产品，输入hunyuan3D 2.0 提供的样例数据(`assets/example_images/004.png`)，输入mesh网格面数量为20000，性能指标如下
+本方案使用1卡Atlas 800I A2推理产品，输入hunyuan3D 2.0 提供的样例数据(`assets/example_images/004.png`)，输入mesh网格面数量为20000，开启减少面数量（--face_reduce）性能指标如下
 |使能方法|texgen运行时长（s）|
 |:---:|:---:|
 |baseline|59.83|
