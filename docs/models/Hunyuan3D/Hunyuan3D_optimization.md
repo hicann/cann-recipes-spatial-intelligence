@@ -74,12 +74,12 @@ class GELU(nn.Module):
         return torch_npu.npu_fast_gelu(x)
 ```
 
-#### PFA算子适配和优化
+#### FIA算子适配和优化
 - **优化原因：** 官方使用的`scaled_dot_product_attention`对应npu算子是`npu_fusion_attention`，`npu_fusion_attention`不支持图模式，因此如果将`npu_fusion_attention`做静态图编译时，会导致`npu_fusion_attention`编译为三个attention核心算子进行运算，带来性能劣化。
     - `BatchMatMul`
     - `SoftmaxV2`
     - `BatchMatMul`
-- **优化方式：** 使用`torch_npu.fused_infer_attention_score`代替`torch_npu.npu_fusion_attention`，PFA是全量FA实现，并且能够进行图编译，同时针对`Softmax`运算溢出问题以及内存连续问题，进行如下优化：
+- **优化方式：** 使用`torch_npu.fused_infer_attention_score`代替`torch_npu.npu_fusion_attention`，FIA同时适配增量&全量推理场景的FlashAttention算子，并且能够进行图编译，同时解决了`Softmax`运算溢出问题以及内存连续问题，进行如下优化：
 ```python
 '''替换部分
 scaled_dot_product_attention = nn.functional.scaled_dot_product_attention
@@ -99,7 +99,7 @@ def npu_fia(q, k, v, scale):
     return out
 
 def attention(q: Tensor, k: Tensor, v: Tensor, **kwargs) -> Tensor:
-    x = npu_fia(q, k, v, scale=(1 / math.sqrt(num_head)))
+    x = npu_fia(q, k, v, scale=(1 / math.sqrt(head_dim)))
     x = rearrange(x, "B H L D -> B L (H D)")
     return x
 
@@ -295,6 +295,43 @@ texture_np, mask = mesh_processor.meshVerticeInpaint(
                    texture_np, mask, vtx_pos, vtx_uv, pos_idx, uv_idx)
 ```
 
+### 光栅化结果复用优化
+**优化原因：** 源码的18次光栅化计算中，只有6种不同输入数据，其余12次计算为冗余计算，造成性能损失。
+
+**优化方法：** 将第一次计算的光栅化过程进行保存，每当输入相同的相机位姿，算法就从缓存中直接读取计算结果。
+```python
+'''替换部分
+rast_out, rast_out_db = self.raster_rasterize(
+            pos_clip, self.pos_idx, resolution=resolution)
+'''
+#替换为
+if (self.save_render and 
+            (elev, azim, camera_distance) in self.render_result.keys()):
+            rast_out = self.render_result[(elev, azim, camera_distance)]
+
+...
+
+self.render_result[(elev, azim, camera_distance)] = rast_out
+```
+### 光栅化过程npu迁移
+**优化原因：** Hunyuan3D源码光栅化没有可在NPU执行的版本，会将光栅化过程迁移至CPU侧执行，不必要的内存搬运和串行计算会带来巨大时延。为了适配NPU架构，提升光栅化性能，本仓库引入render_npu，将光栅化的计算过程迁移至NPU执行。
+
+**优化方法：** 修改光栅化算法，将原先采用遍历mesh顶点的方式，改为对二维平面分块，每个区域中的三角网格合并成一个矩阵计算深度、重心坐标等参数，最终判断每个像素点对应的三角面片。由于NPU侧执行小算子计算不能进行光栅化并行，这部分执行性能略低于并行计算，但是这部分优化可以集成在任何需要光栅化计算的网络结构，带来一定性能收益。
+```python
+'''替换部分
+rast_out, rast_out_db = self.raster_rasterize(
+            pos_clip, self.pos_idx, resolution=resolution)
+'''
+#替换为
+if self.use_render_npu:
+    rast_out, _ = render_npu_rasterize(
+                    resolution, self.pos_idx, pos_clip
+    )
+else:
+    rast_out, _ = self.raster_rasterize(
+                    pos_clip, self.pos_idx, resolution=resolution
+    )
+```
 ## 性能优化指标
 ### shapegen性能优化指标
 本方案使用1卡Atlas 800I A2推理产品，输入hunyuan3D 2.0 提供的样例数据(`assets/example_images/004.png`)，在扩散步数为num_inference_steps=100（minimal_demo_npu.py第89行与111行）情况下,性能指标如下
@@ -311,4 +348,5 @@ texture_np, mask = mesh_processor.meshVerticeInpaint(
 |baseline|59.83|
 |光栅化并行|35.43|
 |光栅化并行+算子优化|30.46|
-|光栅化并行+算子优化+Inpaint优化|26.72|
+|NPU光栅化+算子优化+Inpaint优化+光栅化结果复用|32.86|
+|光栅化并行+算子优化+Inpaint优化+光栅化结果复用|26.52|

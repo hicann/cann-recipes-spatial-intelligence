@@ -2,7 +2,7 @@
 
 Hunyuan3D模型是腾讯混元系列在2025年推出的一款3D资产创作模型，用于生成带有高分辨率纹理贴图的高保真度3D模型，本项目旨在提供Hunyuan3D的NPU适配版本，方便用户能够在昇腾生态上直接使用Hunyuan3D。
 
-此外，本样例基于Hunyuan3D模型在NPU进行了性能优化，目前texgen在2万平面mesh网格输入下，推理时间降至26秒。详细内容可至[性能优化章节](https://gitcode.com/cann/cann-recipes-spatial-intelligence/docs/models/Hunyuan3D/Hunyuan3D_optimization.md)进行查看。
+此外，本样例基于Hunyuan3D模型在NPU进行了性能优化，目前texgen在2万平面mesh网格输入下，推理时间降至26秒。详细内容可至[性能优化章节](https://gitcode.com/cann/cann-recipes-spatial-intelligence/blob/master/docs/models/Hunyuan3D/Hunyuan3D_optimization.md)进行查看。
 
 ## 执行样例
 
@@ -111,9 +111,9 @@ python minimal_demo_npu.py
 ``` minimal_demo_npu.py```采用默认设置执行单图像推理，运行不同配置可参考以下脚本执行：
 
 ```bash
-python minimal_demo_npu.py --model_path tencent/Hunyuan3D-2 --multiview --face_reduce
+python minimal_demo_npu.py --model_path tencent/Hunyuan3D-2 --multiview --face_reduce --full_graph --multi_thread (--use_render_npu) --save_render 
 ```
-```model_path``` 选择模型路径，```multiview``` 设置是否采用多视角推理，```reduce_face``` 设置是否减少三角面片。
+```model_path``` 选择模型路径，```multiview``` 设置是否采用多视角推理，```face_reduce``` 设置是否减少三角面片，```full_graph```设置是否采用图模式，```multi_thread```设置是否采用多线程并行执行光栅化，```use_render_npu```设置是否采用npu方式执行光栅化（不能与```multi_thread```共同使用），```save_render```设置是否复用光栅化结果。
 
 ### 推理步骤介绍
 

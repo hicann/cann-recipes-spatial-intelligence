@@ -21,6 +21,7 @@
 # optimizer states), machine-learning model code, inference-enabling code, training-enabling code,
 # fine-tuning enabling code and other elements of the foregoing made publicly available
 # by Tencent in accordance with TENCENT HUNYUAN COMMUNITY LICENSE AGREEMENT.
+import os
 
 import cv2
 import numpy as np
@@ -30,6 +31,7 @@ import trimesh
 from PIL import Image
 import mesh_processor
 
+from .render_npu.renderer import render_npu_rasterize
 from .camera_utils import (
     transform_pos,
     get_mv_matrix,
@@ -64,7 +66,7 @@ def scatter_add_nd_with_count(input, count, indices, values, weights=None):
     count = count.view(-1, 1)
 
     flatten_indices = (indices * torch.tensor(stride,
-                                              dtype=torch.long, device=indices.device)).sum(-1)  # [N]
+                                              dtype=torch.int32, device=indices.device)).sum(-1)  # [N]
 
     if weights is None:
         weights = torch.ones_like(values[..., :1])
@@ -138,6 +140,12 @@ class MeshRender():
 
         self.device = device
 
+        use_render_npu = os.getenv("USE_RENDER_NPU", "false").lower()
+        self.use_render_npu = use_render_npu in ("1", "true", "yes")
+
+        save_render = os.getenv("SAVE_RENDER", "false").lower()
+        self.save_render = save_render in ("1", "true", "yes")
+
         self.set_default_render_resolution(default_resolution)
         self.set_default_texture_resolution(texture_size)
 
@@ -152,6 +160,7 @@ class MeshRender():
         self.bake_mode = bake_mode
 
         self.raster_mode = raster_mode
+        self.render_result = {}
 
         if camera_type == 'orth':
             self.ortho_scale = 1.2
@@ -167,6 +176,9 @@ class MeshRender():
             )
         else:
             raise f'No camera type {camera_type}'
+
+    def reset_render_result(self):
+        self.render_result = {}
 
     def raster_rasterize(self, pos, tri, resolution, ranges=None, grad_db=True):
 
@@ -428,6 +440,32 @@ class MeshRender():
             image = Image.fromarray(image.astype(np.uint8))
         return image
 
+
+    def raster(self, pos_clip, resolution):
+        if self.use_render_npu:
+            rast_out, _ = render_npu_rasterize(
+                pos_clip, self.pos_idx, resolution
+            )
+        else:
+            rast_out, _ = self.raster_rasterize(
+                pos_clip, self.pos_idx, resolution
+            )
+        return rast_out
+
+
+    def caculate_raster(self, camera_para, pos_clip, resolution):
+
+        if (self.save_render and camera_para in self.render_result.keys()):
+            rast_out = self.render_result[camera_para]
+        else:
+            rast_out = self.raster(pos_clip, resolution)
+            
+            if self.save_render:
+                self.render_result[camera_para] = rast_out
+        
+        return rast_out
+
+
     def render_normal(
         self,
         elev,
@@ -447,8 +485,9 @@ class MeshRender():
             resolution = self.default_resolution
         if isinstance(resolution, (int, float)):
             resolution = [resolution, resolution]
-        rast_out, rast_out_db = self.raster_rasterize(
-            pos_clip, self.pos_idx, resolution=resolution)
+
+        camera_para = (elev, azim, camera_distance)
+        rast_out = self.caculate_raster(camera_para, pos_clip, resolution)
 
         if use_abs_coor:
             mesh_triangles = self.vtx_pos[self.pos_idx[:, :3], :]
@@ -545,8 +584,9 @@ class MeshRender():
             resolution = self.default_resolution
         if isinstance(resolution, (int, float)):
             resolution = [resolution, resolution]
-        rast_out, rast_out_db = self.raster_rasterize(
-            pos_clip, self.pos_idx, resolution=resolution)
+
+        camera_para = (elev, azim, camera_distance)
+        rast_out = self.caculate_raster(camera_para, pos_clip, resolution)
 
         pos_camera = pos_camera[:, :3] / pos_camera[:, 3:4]
         tex_depth = pos_camera[:, 2].reshape(1, -1, 1).contiguous()
@@ -578,8 +618,9 @@ class MeshRender():
             resolution = self.default_resolution
         if isinstance(resolution, (int, float)):
             resolution = [resolution, resolution]
-        rast_out, rast_out_db = self.raster_rasterize(
-            pos_clip, self.pos_idx, resolution=resolution)
+
+        camera_para = (elev, azim, camera_distance)
+        rast_out = self.caculate_raster(camera_para, pos_clip, resolution)
 
         tex_position = 0.5 - self.vtx_pos[:, :3] / self.scale_factor
         tex_position = tex_position.contiguous()
@@ -696,8 +737,10 @@ class MeshRender():
         vertex_normals = torch.from_numpy(
             vertex_normals).float().to(self.device).contiguous()
         tex_depth = pos_camera[:, 2].reshape(1, -1, 1).contiguous()
-        rast_out, rast_out_db = self.raster_rasterize(
-            pos_clip, self.pos_idx, resolution=resolution)
+
+        camera_para = (elev, azim, camera_distance)
+        rast_out = self.caculate_raster(camera_para, pos_clip, resolution)
+                
         visible_mask = torch.clamp(rast_out[..., -1:], 0, 1)[0, ...]
 
         normal, _ = self.raster_interpolate(

@@ -85,11 +85,11 @@ class Light_Shadow_Remover():
             image_array[:, :, rgb_channel] = alpha_channel
             image = Image.fromarray(image_array)
 
-            image_tensor = torch.tensor(np.array(image) / 255.0).to(self.device)
+            image_tensor = torch.tensor(np.array(image) / 255.0).to(torch.float16).to(self.device)
             alpha = image_tensor[:, :, rgb_channel:]
             rgb_target = image_tensor[:, :, :rgb_channel]
         else:
-            image_tensor = torch.tensor(np.array(image) / 255.0).to(self.device)
+            image_tensor = torch.tensor(np.array(image) / 255.0).to(torch.float16).to(self.device)
             alpha = torch.ones_like(image_tensor)[:, :, :1]
             rgb_target = image_tensor[:, :, :rgb_channel]
 
@@ -106,7 +106,7 @@ class Light_Shadow_Remover():
             guidance_scale=self.cfg_text,
         ).images[0]
 
-        image_tensor = torch.tensor(np.array(image) / 255.0).to(self.device)
+        image_tensor = torch.tensor(np.array(image) / 255.0).to(torch.float16).to(self.device)
         rgb_src = image_tensor[:, :, :rgb_channel]
 
         image = self.recorrect_rgb(rgb_src, rgb_target, alpha)

@@ -52,7 +52,14 @@ def main():
     parser.add_argument('--multiview', action='store_true', default=False, help="多视角输入")
     parser.add_argument('--face_reduce', action='store_true', default=False, help="减少mesh面片数量")
     parser.add_argument('--full_graph', action='store_true', default=False, help="开启图模式")
+    parser.add_argument('--multi_thread', action='store_true', default=False, help="开启delighting和render，bake的多线程并行")
+    parser.add_argument('--use_render_npu', action='store_true', default=False, help="开启render_npu")
+    parser.add_argument('--save_render', action='store_true', default=False, help="开启保存光栅化结果")
     args = parser.parse_args()
+    
+    os.environ['MULTI_THREAD'] = 'true' if args.multi_thread else 'false'
+    os.environ['USE_RENDER_NPU'] = 'true' if args.use_render_npu else 'false'
+    os.environ['SAVE_RENDER'] = 'true' if args.save_render else 'false'
     if args.full_graph:
         config = torchair.CompilerConfig()
         config.experimental_config.keep_inference_input_mutations = True

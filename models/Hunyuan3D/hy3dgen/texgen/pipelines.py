@@ -15,7 +15,6 @@
 
 import logging
 import os
-
 from typing import List, Union, Optional
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 
@@ -55,7 +54,7 @@ class Hunyuan3DTexGenConfig:
 
 class Hunyuan3DPaintPipeline:
     @classmethod
-    def from_pretrained(cls, model_path, subfolder='hunyuan3d-paint-v2-0'):
+    def from_pretrained(cls, model_path, subfolder='hunyuan3d-paint-v2-0-turbo'):
         original_model_path = model_path
         if not os.path.exists(model_path):
             # try local path
@@ -92,6 +91,13 @@ class Hunyuan3DPaintPipeline:
     def __init__(self, config):
         self.config = config
         self.models = {}
+
+        use_render_npu = os.getenv("USE_RENDER_NPU", "false").lower()
+        self.use_render_npu = use_render_npu in ("1", "true", "yes")
+
+        multi_thread = os.getenv("MULTI_THREAD", "false").lower()
+        self.multi_thread = multi_thread in ("1", "true", "yes")
+
         self.render = MeshRender(
             default_resolution=self.config.render_size,
             texture_size=self.config.texture_size)
@@ -190,12 +196,12 @@ class Hunyuan3DPaintPipeline:
 
     def _delighting_render_multiview(self, images_prompt, selected_camera_elevs, selected_camera_azims, 
                                      use_abs_coor=True):
-        total_tasks = len(images_prompt) + 2 * len(selected_camera_elevs)
-        max_workers = min(20, total_tasks)
 
+        total_tasks = len(images_prompt) + 2 * len(selected_camera_elevs) # total task num
+        # Set the maximum number of threads to 20 as a default configuration
+        max_workers = min(20, total_tasks)
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             normal_futures = {}
-            position_futures = {}
 
             for idx, (elev, azim) in enumerate(zip(selected_camera_elevs, selected_camera_azims)):
                 normal_future = executor.submit(
@@ -204,34 +210,26 @@ class Hunyuan3DPaintPipeline:
                 )
                 normal_futures[normal_future] = idx
 
-                position_future = executor.submit(
-                    self.render.render_position, elev, azim,
-                    return_type='pl'
-                )
-                position_futures[position_future] = idx
+            normal_maps = [None] * len(selected_camera_elevs)
+            images_prompt = [self.models['delight_model'](image_prompt) for image_prompt in images_prompt]
 
-        rast_out_maps = [None] * len(selected_camera_elevs)
-        normal_maps = [None] * len(selected_camera_elevs)
-        position_maps = [None] * len(selected_camera_elevs)
-        images_prompt = [self.models['delight_model'](image_prompt) for image_prompt in images_prompt]
-
-        for future in as_completed(list(normal_futures.keys()) + list(position_futures.keys())):
-
-            result = future.result()
-            if future in normal_futures:
-                idx = normal_futures[future]
+            for future in as_completed(list(normal_futures.keys())):
+                result = future.result()
+                idx = normal_futures.get(future)
                 normal_maps[idx] = result
-            elif future in position_futures:
-                idx = position_futures[future]
-                position_maps[idx] = result
-        
-        return images_prompt, normal_maps, position_maps
+            
+            return images_prompt, normal_maps
 
-    def _bake_from_multiview(self, views, camera_elevs,
+    def multi_thread_bake_from_multiview(self, views, camera_elevs,
                             camera_azims, view_weights, method='graphcut'):
+        
+        total_tasks = len(camera_elevs) # total task num
+        # Set the maximum number of threads to 20 as a default configuration
+        max_workers = min(20, total_tasks)
+
         with ThreadPoolExecutor(max_workers=20) as executor:
             futures = []
-            for idx,(view, camera_elev, camera_azim, weight) in enumerate(zip(views, camera_elevs,
+            for idx, (view, camera_elev, camera_azim, weight) in enumerate(zip(views, camera_elevs,
                                                                              camera_azims, view_weights)):
                 future = executor.submit(self.render.back_project,
                                         view, camera_elev, camera_azim)
@@ -279,9 +277,20 @@ class Hunyuan3DPaintPipeline:
         selected_camera_elevs, selected_camera_azims, selected_view_weights = \
             self.config.candidate_camera_elevs, self.config.candidate_camera_azims, self.config.candidate_view_weights
 
-        images_prompt, normal_maps, position_maps = self._delighting_render_multiview(
-            images_prompt, selected_camera_elevs, selected_camera_azims
-        )
+        if self.multi_thread and self.use_render_npu:
+            raise ValueError("不能同时使用多线程并行优化及render_npu优化")
+        elif self.multi_thread:
+            images_prompt, normal_maps = self._delighting_render_multiview(
+                images_prompt, selected_camera_elevs, selected_camera_azims
+            )
+            position_maps = self.render_position_multiview(
+                            selected_camera_elevs, selected_camera_azims) # use multi_thread
+        else:
+            images_prompt = [self.models['delight_model'](image_prompt) for image_prompt in images_prompt]
+            normal_maps = self.render_normal_multiview(
+                            selected_camera_elevs, selected_camera_azims, use_abs_coor=True)
+            position_maps = self.render_position_multiview(
+                            selected_camera_elevs, selected_camera_azims)
 
         camera_info = [(((azim // 30) + 9) % 12) // {-20: 1, 0: 1, 20: 1, -90: 3, 90: 3}[
             elev] + {-20: 0, 0: 12, 20: 24, -90: 36, 90: 40}[elev] for azim, elev in
@@ -291,10 +300,18 @@ class Hunyuan3DPaintPipeline:
         for i in range(len(multiviews)):
             multiviews[i] = multiviews[i].resize(
                 (self.config.render_size, self.config.render_size))
-
-        texture, mask = self._bake_from_multiview(multiviews, selected_camera_elevs,
-                                            selected_camera_azims, selected_view_weights,
-                                            method=self.config.merge_method)
+        if self.multi_thread:
+            texture, mask = self.multi_thread_bake_from_multiview(multiviews,
+                                                      selected_camera_elevs,
+                                                      selected_camera_azims,
+                                                      selected_view_weights,
+                                                      method=self.config.merge_method)
+        else:
+            texture, mask = self.bake_from_multiview(multiviews,
+                                                     selected_camera_elevs,
+                                                     selected_camera_azims,
+                                                     selected_view_weights,
+                                                     method=self.config.merge_method)
 
         mask_np = (mask.squeeze(-1).cpu().numpy() * 255).astype(np.uint8)
 
@@ -302,5 +319,6 @@ class Hunyuan3DPaintPipeline:
 
         self.render.set_texture(texture)
         textured_mesh = self.render.save_mesh()
+        self.render.reset_render_result()
 
         return textured_mesh
