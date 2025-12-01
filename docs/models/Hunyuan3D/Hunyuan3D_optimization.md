@@ -2,11 +2,9 @@
 本文主要介绍Hunyuan3D模型基于NPU的推理优化策略，其中包括以下优化点：
 
 shapegen部分：
-- 融合算子优化
-
-- 高性能算子优化与融合算子替换
+- 使能融合算子与高性能计算算子
 - PFA算子适配
-- torchair图模式优化
+- torchair图模式适配
   - DIT 图模式适配
   - VAE-decoder 图模式适配
 - CPU-NPU搬运优化
@@ -52,7 +50,7 @@ class RMSNorm(torch.nn.Module):
 
 ### 替代高性能算子
 #### 替代高性能算子
-- **优化原因：** 在神经网络中，GELU是一个重要的激活函数，其灵感来源于relu和dropout，在激活中引入了随机正则的思想。为了提升GELU算子在NPU上的运行性能，业界提出了FastGelu等版本。本接口FasterGelu是针对FastGelu的化简版本，公式化简可以大幅度提升计算性能。原理是使用泰勒展开逼近计算结果。
+- **优化原因：** 在神经网络中，GELU是一个重要的激活函数，其灵感来源于relu和dropout，在激活中引入了随机正则的思想。为了提升GELU算子在NPU上的运行性能，业界提出了FastGelu等版本。本接口FasterGelu是针对FastGelu的化简版本，可以大幅度提升计算性能。原理是使用泰勒展开逼近计算结果。
 - **优化方式：** 修改`hy3dgen/shapegen/models/denoisers/hunyuan3ddit.py`文件中GELU函数，使用`torch_npu.npu_fast_gelu`替换`nn.functional.gelu`的算子实现。
 ```python
 '''替换部分
@@ -79,7 +77,7 @@ class GELU(nn.Module):
     - `BatchMatMul`
     - `SoftmaxV2`
     - `BatchMatMul`
-- **优化方式：** 使用`torch_npu.fused_infer_attention_score`代替`torch_npu.npu_fusion_attention`，FIA同时适配增量&全量推理场景的FlashAttention算子，并且能够进行图编译，同时解决了`Softmax`运算溢出问题以及内存连续问题，进行如下优化：
+- **优化方式：** 使用`torch_npu.fused_infer_attention_score`代替`torch_npu.npu_fusion_attention`，FIA同时适配增量&全量推理场景的FlashAttention算子，能够进行图编译，并且同时解决了`Softmax`运算溢出问题以及内存连续问题。进行如下优化：
 ```python
 '''替换部分
 scaled_dot_product_attention = nn.functional.scaled_dot_product_attention
@@ -125,8 +123,8 @@ if args.full_graph:
 python minimal_demo_npu.py --full_graph 
 ```      
 ### CPU-NPU搬运优化
-- **优化原因：** 从CPU搬运到NPU存在搬运耗时，频繁的搬运会导致性能劣化，在时间步生成时尤其明显，
-- **优化方式：** 直接在NPU上生成时间戳
+- **优化原因：** 从CPU搬运到NPU存在搬运耗时，频繁的搬运会导致性能劣化，在生成时间步的步骤尤其明显，
+- **优化方式：** 直接在NPU上生成时间步
 ```python
 '''替换部分
 def timestep_embedding(t: Tensor, dim, max_period=10000, time_factor: float = 1000.0):
@@ -145,9 +143,9 @@ def timestep_embedding(t: Tensor, dim, max_period=10000, time_factor: float = 10
 
 ## texgen性能优化介绍
 ### 多线程并行光栅化
-**优化原因：** CPU侧执行光栅化会带来巨大时延，Hunyuan3D texgen在6个不同视角分别进行法向信息，位姿信息，纹理信息投影，共进行18次光栅化。由于光栅化相互之间与delighting来自不同数据通路，没有数据依赖关系，可以采用并行计算的方式，隐藏光栅化时延。
+**优化原因：** CPU侧执行光栅化会带来巨大时延，Hunyuan3D texgen在6个不同视角分别进行法向信息、位姿信息、纹理信息投影，共进行18次光栅化。由于光栅化相互之间与delighting来自不同数据通路，没有数据依赖关系，可以采用并行计算的方式，隐藏光栅化时延。
 
-**优化方法：** 将法向计算和位姿计算，以及delighting过程中相互间没有依赖关系的计算过程施加并行。提升计算效率。对hy3dgen/texgen/pipelines.py中的代码做如下替换：
+**优化方法：** 将法向计算和位姿计算，以及delighting过程中相互间没有依赖关系的计算过程施加并行，提升计算效率。对hy3dgen/texgen/pipelines.py中的代码做如下替换：
 
 ```python
 '''替换部分
@@ -316,7 +314,7 @@ self.render_result[(elev, azim, camera_distance)] = rast_out
 ### 光栅化过程npu迁移
 **优化原因：** Hunyuan3D源码光栅化没有可在NPU执行的版本，会将光栅化过程迁移至CPU侧执行，不必要的内存搬运和串行计算会带来巨大时延。为了适配NPU架构，提升光栅化性能，本仓库引入render_npu，将光栅化的计算过程迁移至NPU执行。
 
-**优化方法：** 修改光栅化算法，将原先采用遍历mesh顶点的方式，改为对二维平面分块，每个区域中的三角网格合并成一个矩阵计算深度、重心坐标等参数，最终判断每个像素点对应的三角面片。由于NPU侧执行小算子计算不能进行光栅化并行，这部分执行性能略低于并行计算，但是这部分优化可以集成在任何需要光栅化计算的网络结构，带来一定性能收益。
+**优化方法：** 修改光栅化算法，将原先采用遍历mesh顶点的方式，改为对二维平面分块，每个区域中的三角网格合并成一个矩阵计算深度、重心坐标等参数，最终判断每个像素点对应的三角面片。由NPU侧执行小算子计算不能同时进行光栅化并行。
 ```python
 '''替换部分
 rast_out, rast_out_db = self.raster_rasterize(
