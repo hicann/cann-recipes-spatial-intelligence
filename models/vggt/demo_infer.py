@@ -1,11 +1,16 @@
 # coding=utf-8
 # Copyright (c) 2025, HUAWEI CORPORATION.  All rights reserved.
-# This file is a part of the CANN Open Software
-# Licensed under CANN Open Software License Agreement Version 2.0 (the "License").
-# Please refer to the License for details. You may not use this file except in compliance with the License.
-# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
-# INCLUDING BUT NOT LIMITED TO NON-INFRINGMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
-# See LICENSE in the root of the software repository for the full text of the License.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 import os
 import argparse
 import time
@@ -69,8 +74,8 @@ def quick_start(pt_path, image_paths):
                 predictions = model(images)
                 exec_time = sync_and_get_time(start_time)
                 exec_time_list.append(exec_time)
-            logging.info(f"The execution time of inferences: {exec_time_list} and \
-                    the average time is {sum(exec_time_list) / len(exec_time_list)}")
+            logging.info(f"The execution time (ms) of inferences: {exec_time_list} and \
+                    the average time is {sum(exec_time_list) / len(exec_time_list)} s.")
 
 
 def parse_args():
