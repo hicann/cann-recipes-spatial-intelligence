@@ -137,7 +137,7 @@ class RotaryPositionEmbedding2D(nn.Module):
             horizontal_sin = F.embedding(input_positions[..., 1], sin_components)[:, None, :, :]
             cos_sin_output = [vertical_cos, vertical_sin, horizontal_cos, horizontal_sin]
             return cos_sin_output
-        sub_cache_key = (height, width)
+        sub_cache_key = (height, width, batch_size)
         if sub_cache_key not in self.cos_sin_cache:
             # Embed positions with frequency components
             vertical_cos = F.embedding(input_positions[..., 0], cos_components)[:, None, :, :]

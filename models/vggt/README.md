@@ -29,6 +29,7 @@
   ```
 - 将VGGT仓库的网络模型文件以**非覆盖模式**复制到本项目目录下。
    ```shell
+  cp vggt/visual_utils.py cann-recipes-spatial-intelligence/models/vggt/
   cp -r vggt/examples cann-recipes-spatial-intelligence/models/vggt/
   cp -rn vggt/vggt/dependency cann-recipes-spatial-intelligence/models/vggt/vggt/dependency
   cp -rn vggt/vggt/heads cann-recipes-spatial-intelligence/models/vggt/vggt/
