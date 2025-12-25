@@ -43,6 +43,7 @@
         +--- eval
         +--- ckpt
             +--- model.pt
+        +--- quant
         +--- vggt
             +--- dependency
             +--- heads
@@ -56,9 +57,17 @@ This repo provides script to test the functionality and the performance of VGGT 
     ```shell 
     source /usr/local/Ascend/ascend-toolkit/set_env.sh 
     ```
-2. Run the inference script and the output presents the average inference time of vggt model.
+2. Run the inference script and the output presents the average inference time of vggt bf16 model.
    ```shell
     python demo_infer.py --ckpt "ckpt/model.pt"
+   ```
+3. To perform vggt int8 model inference, you first need to build the vggt int8 model:
+   ```shell
+    python demo_infer.py --ckpt "ckpt/model.pt" --buildW8A8
+   ```
+   The vggt int8 model will be built in the current path, and then used for inference:
+   ```shell
+    python demo_infer.py --ckpt VGGT_model_W8A8.pt --enableW8A8
    ```
 ## Accurancy Benchmark
 This repo provides accurancy benchmark to evaluate the VGGT model on NPU. The full benchmark include three programs to test the accurancy of VGGT on Pose Evaluation, Point Map Evaluation and Depth Evaluation. 
@@ -84,10 +93,20 @@ Since the full dataste of benchmark is large, we can initially test the accuranc
     ```
 ### Accurancy Measurement
 - Execute the benchmark program:
+-   * Use vggt bf16 model:
     ```shell
     export VGGT_DIR=$(pwd)
     cd eval/pose_evaluation
     python eval_co3d.py --co3d_dir $VGGT_DIR/datasets/co3d/co3d_data/
         --co3d_anno_dir $VGGT_DIR/datasets/co3d/co3d_anno/  --ckpt $VGGT_DIR/ckpt/model.pt
     ```
-- **Currently, the measurement accurancy is about 0.85.**
+    * Currently, the bf16 model measurement accurancy is about 0.911.
+    
+-   * Use vggt int8 model:
+    ```shell
+    export VGGT_DIR=$(pwd)
+    cd eval/pose_evaluation
+    python eval_co3d.py --co3d_dir $VGGT_DIR/datasets/co3d/co3d_data/
+        --co3d_anno_dir $VGGT_DIR/datasets/co3d/co3d_anno/  --ckpt VGGT_model_W8A8.pt --enableW8A8
+    ```
+    * Currently, the int8 model measurement accurancy is about 0.907.

@@ -36,6 +36,7 @@ def get_depth_estimation_opts():
     parser.add_argument('--testpath', help='data path for testing')
     parser.add_argument('--testlist', help='data list for testing')
     parser.add_argument("--ckpt", help="checkpoint location")
+    parser.add_argument("--enableW8A8", action="store_true", help="apply W8A8 model")
     parser.add_argument('--outdir', default='./outputs', help='output dir')
 
     return parser.parse_args()
@@ -44,6 +45,7 @@ def get_depth_estimation_opts():
 def get_point_map_estimation_opts():
     parser = argparse.ArgumentParser("Test VGGT Point Map Estimation on ETH3d datasets.", add_help=False)
     parser.add_argument("--ckpt", help="checkpoint location")
+    parser.add_argument("--enableW8A8", action="store_true", help="apply W8A8 model")
     parser.add_argument("--dataset_dir", help="dataset location")
     parser.add_argument(
         "--output_dir",
@@ -64,4 +66,5 @@ def get_pose_evaluation_opts():
     parser.add_argument('--co3d_dir', type=str, required=True, help='Path to CO3D dataset')
     parser.add_argument('--co3d_anno_dir', type=str, required=True, help='Path to CO3D annotations')
     parser.add_argument("--ckpt", help="checkpoint location")
+    parser.add_argument("--enableW8A8", action="store_true", help="apply W8A8 model")
     return parser.parse_args()

@@ -27,7 +27,8 @@ from general_utils import fix_random_seed, get_pose_evaluation_opts
 from dataset_prepare.categories import SEEN_CATEGORIES
 from utils import convert_pt3d_rt_to_opencv, calculate_auc_np, \
     se3_to_relative_pose_error, load_annotation, list_per_category_downloaded_seq_names
-
+from quant.vggt_utils import replace_linear_in_vggt, set_ignore_quantize
+from quant.vggt_linear import LinearW8A8
 logging.basicConfig(level=logging.INFO)
 
 
@@ -200,26 +201,28 @@ def main(model, device, args, dtype, categories):
 
 
 if __name__ == "__main__":
-    
+    # Set random seeds
     fix_random_seed(42)
-    
     # Parse command-line arguments
     args = get_pose_evaluation_opts()
-
-
     # Setup device and data type
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "npu:0" if torch.cuda.is_available() else "cpu"
     dtype = torch.bfloat16 
 
     # Load model
-    model = VGGT()
-    checkpoint_path = args.ckpt  # Path to the model checkpoint
-    checkpoint = torch.load(checkpoint_path)
-    model.load_state_dict(checkpoint)
-    model.to(device).eval()
-    model = model.to(dtype)
-    model = cast_model_weight(model)
-    torch.npu.set_compile_mode(jit_compile=False)
+    checkpoint_path = args.ckpt    
+    if args.enableW8A8:
+        model = torch.load(checkpoint_path, map_location=device)
+        model.to(device).eval()
+    else:
+        model = VGGT()
+        checkpoint = torch.load(checkpoint_path)
+        model.load_state_dict(checkpoint)
+        model = model.to(dtype)
+        model.to(device).eval()
+        model = cast_model_weight(model)
+        torch.npu.set_compile_mode(jit_compile=False)
+
     main(model, device, args, dtype, SEEN_CATEGORIES)
     torch.cuda.empty_cache()
     gc.collect()

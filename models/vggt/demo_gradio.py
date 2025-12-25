@@ -34,7 +34,7 @@ from vggt.utils.cast_weight import cast_model_weight
 parser = argparse.ArgumentParser("VGGT quick start.", add_help=False)
 parser.add_argument("--ckpt", help="checkpoint location")
 args = parser.parse_args()
-device = "cuda" if torch.cuda.is_available() else "cpu"
+device = "npu:0" if torch.cuda.is_available() else "cpu"
 logging.basicConfig(level=logging.INFO)
 logging.info("Initializing and loading VGGT model...")
 model = VGGT()

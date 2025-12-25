@@ -24,6 +24,8 @@ from vggt.models.vggt import VGGT
 from vggt.utils.load_fn import load_and_preprocess_images
 from vggt.utils.cast_weight import cast_model_weight
 from eval.general_utils import fix_random_seed
+from quant.vggt_utils import replace_linear_in_vggt, set_ignore_quantize
+from quant.vggt_linear import LinearW8A8
 
 logging.basicConfig(level=logging.INFO)
 
@@ -47,21 +49,34 @@ def sync_and_get_time(start_time=None, use_syn=True):
     return timestamp
 
 
-def quick_start(pt_path, image_paths):
+def quick_start(args):
     fix_random_seed(42)
     # Device check
-    device = "npu:6" if torch.cuda.is_available() else "cpu"
+    device = "npu:0" if torch.cuda.is_available() else "cpu"
     if not torch.cuda.is_available():
         raise ValueError("CUDA is not available. Check your environment.")
     dtype = torch.bfloat16
-    model = VGGT()
-    checkpoint_path = pt_path 
-    checkpoint = torch.load(checkpoint_path)
-    model.load_state_dict(checkpoint)
-    model = model.to(dtype)
-    
-    model.to(device).eval()
-    model = cast_model_weight(model)
+
+    checkpoint_path = args.ckpt
+    if args.enableW8A8:
+        model = torch.load(checkpoint_path, map_location=device)
+        model.to(device).eval()
+    else:
+        model = VGGT()
+        checkpoint = torch.load(checkpoint_path)
+        model.load_state_dict(checkpoint)
+        model = model.to(dtype)
+        model.to(device).eval()
+        model = cast_model_weight(model)
+        if args.buildW8A8:
+            # build model_W8A8
+            set_ignore_quantize(model, ignore_quantize=True)
+            replace_linear_in_vggt(model, device=device)
+            save_path = os.path.join(os.getcwd(), "VGGT_model_W8A8.pt")
+            torch.save(model, save_path)
+            return
+
+    image_paths = args.images_path
     image_names = get_all_files_paths(image_paths)
     image_names = sorted(image_names)
     images = load_and_preprocess_images(image_names).to(device)
@@ -81,13 +96,15 @@ def quick_start(pt_path, image_paths):
 def parse_args():
     parser = argparse.ArgumentParser("VGGT quick start.", add_help=False)
     parser.add_argument("--ckpt", help="checkpoint location")
+    parser.add_argument("--buildW8A8", action="store_true", help="build W8A8 model")
+    parser.add_argument("--enableW8A8", action="store_true", help="apply W8A8 model")
     parser.add_argument("--images_path", default="examples/kitchen/images", help="dataset location")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
-    quick_start(args.ckpt, args.images_path)
+    quick_start(args)
 
 
 if __name__ == "__main__":

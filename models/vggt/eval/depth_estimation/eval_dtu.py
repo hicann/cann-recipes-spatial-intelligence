@@ -83,15 +83,21 @@ if __name__ == '__main__':
     # Parse command-line arguments
     args = get_depth_estimation_opts()
     # Setup device and data type
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.bfloat16
+    device = "npu:0" if torch.cuda.is_available() else "cpu"
+    dtype = torch.bfloat16 
+
     # Load model
-    model = VGGT()
-    pt_path = args.ckpt
-    model.load_state_dict(torch.load(pt_path))
-    model = model.to(dtype)
-    model = model.to(device).eval()
-    model = cast_model_weight(model)
+    checkpoint_path = args.ckpt    
+    if args.enableW8A8:
+        model = torch.load(checkpoint_path, map_location=device)
+        model.to(device).eval()
+    else:
+        model = VGGT()
+        checkpoint = torch.load(checkpoint_path)
+        model.load_state_dict(checkpoint)
+        model = model.to(dtype)
+        model.to(device).eval()
+        model = cast_model_weight(model)
     # Load dataset
     test_dataset = DTUDataset(args.testpath, args.testlist, args.n_views, max_wh=(518, 518))
     TestImgLoader = DataLoader(test_dataset, args.batch_size, shuffle=False, num_workers=4, drop_last=False)

@@ -50,6 +50,7 @@
     +--- eval
     +--- ckpt
           +--- model.pt
+    +--- quant
     +--- vggt
           +--- dependency
           +--- heads
@@ -64,9 +65,18 @@
 ```shell
 source /usr/local/Ascend/ascend-toolkit/set_env.sh 
 ```
-推理脚本运行：
+推理bf16模型脚本运行：
 ```python
 python demo_infer.py --ckpt "ckpt/model.pt"
+```
+
+推理int8模型，需要先生成int8模型(当前实现中，只将VGGT模型中K=4096的Linear层进行了8bit量化)：
+```python
+python demo_infer.py --ckpt "ckpt/model.pt" --buildW8A8
+```
+in8模型会生成在当前路径，再使用该int8模型进行推理：
+```python
+python demo_infer.py --ckpt VGGT_model_W8A8.pt --enableW8A8
 ```
 ---
 ## Citation

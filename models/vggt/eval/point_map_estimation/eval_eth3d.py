@@ -125,23 +125,28 @@ def main(model, dataset, device, args, dtype):
         
 
 if __name__ == "__main__":
-    # Parse command-line arguments
-    args = get_point_map_estimation_opts()
     # Set random seeds
     fix_random_seed(42)
+    # Parse command-line arguments
+    args = get_point_map_estimation_opts()
     # Setup device and data type
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "npu:0" if torch.cuda.is_available() else "cpu"
     dtype = torch.bfloat16 
+
     # Load model
-    model = VGGT()
-    checkpoint_path = args.ckpt  # Path to the model checkpoint
-    checkpoint = torch.load(checkpoint_path)
-    model.load_state_dict(checkpoint)
-    model.to(device).eval()
-    model = model.to(dtype)
-    model = cast_model_weight(model)
-    resolution = (518, 392)
+    checkpoint_path = args.ckpt    
+    if args.enableW8A8:
+        model = torch.load(checkpoint_path, map_location=device)
+        model.to(device).eval()
+    else:
+        model = VGGT()
+        checkpoint = torch.load(checkpoint_path)
+        model.load_state_dict(checkpoint)
+        model = model.to(dtype)
+        model.to(device).eval()
+        model = cast_model_weight(model)
     # Load dataset
+    resolution = (518, 392)
     test_dataset = ETH3D(
             root_dir=args.dataset_dir,
             resolution=resolution,

@@ -70,15 +70,22 @@
 2. **精度评测脚本运行**：运行eval_co3d.py进行相机位姿估计任务精度测量。
    ```shell
    export VGGT_DIR=$(pwd)
+   # use bf16 model
    cd eval/pose_evaluation
    python eval_co3d.py --co3d_dir $VGGT_DIR/datasets/co3d/co3d_data/ --co3d_anno_dir $VGGT_DIR/datasets/co3d/co3d_anno/  --ckpt $VGGT_DIR/ckpt/model.pt
+   # use int8 model
+   cd eval/pose_evaluation
+   python eval_co3d.py --co3d_dir $VGGT_DIR/datasets/co3d/co3d_data/ --co3d_anno_dir $VGGT_DIR/datasets/co3d/co3d_anno/  --ckpt ../../VGGT_model_W8A8.pt --enableW8A8
    ```
 ### 点云三维重建
 1. **点云重建评测脚本运行**：运行eval_eth3d.py 进行点云三维重建任务精度测量
   ```shell
   export VGGT_DIR=$(pwd)
   cd eval/point_map_estimation
+  # use bf16 model
   python eval_eth3d.py --ckpt $VGGT_DIR/ckpt/model.pt --dataset_dir $VGGT_DIR/datasets/multi_view_training_dslr_jpg
+  # use int8 model
+  python eval_eth3d.py --ckpt ../../VGGT_model_W8A8.pt --dataset_dir $VGGT_DIR/datasets/multi_view_training_dslr_jpg --enableW8A8
   ```
 
 ### 深度估计
@@ -86,9 +93,12 @@
    ```shell
     export VGGT_DIR=$(pwd)
     cd eval/depth_estimation
-    # 深度图输出结果将保存在$VGGT_DIR/outputs文件夹下
+    # 深度图输出结果将保存在$VGGT_DIR/outputs文件夹下(bf16模型)
     python eval_dtu.py --testlist dataset_utils/lists/test.txt --testpath $VGGT_DIR/datasets/dtu_testing/ --ckpt $VGGT_DIR/ckpt/model.pt #使用全量数据集
     # python eval_dtu.py --testlist dataset_utils/lists/sub_test.txt --testpath $VGGT_DIR/datasets/dtu_testing/ --ckpt $VGGT_DIR/ckpt/model.pt #使用部分数据集
+    # 深度图输出结果将保存在$VGGT_DIR/outputs文件夹下(in8模型)
+    python eval_dtu.py --testlist dataset_utils/lists/test.txt --testpath $VGGT_DIR/datasets/dtu_testing/ --ckpt ../../VGGT_model_W8A8.pt --enableW8A8 #使用全量数据集
+    # python eval_dtu.py --testlist dataset_utils/lists/sub_test.txt --testpath $VGGT_DIR/datasets/dtu_testing/ --ckpt ../../VGGT_model_W8A8.pt --enableW8A8 #使用部分数据集
    ```
 
 2. **深度图数值分布对齐**：由于VGGT模型基于归一化后的图像进行训练的，因此得到的深度图取值范围与真实深度图取值范围不接近，因此需要将生成的深度图与真值进行对齐。
