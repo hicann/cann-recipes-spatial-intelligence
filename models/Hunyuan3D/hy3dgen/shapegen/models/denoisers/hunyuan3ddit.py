@@ -1,3 +1,13 @@
+# Open Source Model Licensed under the Apache License Version 2.0
+# and Other Licenses of the Third-Party Components therein:
+# The below Model in this distribution may have been modified by THL A29 Limited
+# ("Tencent Modifications"). All Tencent Modifications are Copyright (C) 2024 THL A29 Limited.
+
+# Copyright (C) 2024 THL A29 Limited, a Tencent company.  All rights reserved.
+# The below software and/or models in this distribution may have been
+# modified by THL A29 Limited ("Tencent Modifications").
+# All Tencent Modifications are Copyright (C) THL A29 Limited.
+
 # Hunyuan 3D is licensed under the TENCENT HUNYUAN NON-COMMERCIAL LICENSE AGREEMENT
 # except for the third-party components listed below.
 # Hunyuan 3D does not impose any additional limitations beyond what is outlined
@@ -21,6 +31,8 @@ import torch
 import torch_npu
 from einops import rearrange
 from torch import Tensor, nn
+
+from module.dit_cache_step import cache_manager
 
 
 def npu_fia(q, k, v, scale):
@@ -389,6 +401,7 @@ class Hunyuan3DDiT(nn.Module):
             print('unexpected keys:', unexpected)
             print('missing keys:', missing)
 
+
     def forward(
         self,
         x,
@@ -408,14 +421,18 @@ class Hunyuan3DDiT(nn.Module):
 
         cond = self.cond_in(cond)
         pe = None
-
-        for block in self.double_blocks:
+        for i, block in enumerate(self.double_blocks):
             latent, cond = block(img=latent, txt=cond, vec=vec, pe=pe)
+            if i != 0 and cache_manager.cache_step.should_skip:
+                break
 
-        latent = torch.cat((cond, latent), 1)
-        for block in self.single_blocks:
-            latent = block(latent, vec=vec, pe=pe)
+        if not cache_manager.cache_step.should_skip:
 
-        latent = latent[:, cond.shape[1]:, ...]
+            latent = torch.cat((cond, latent), 1)
+            for block in self.single_blocks:
+                latent = block(latent, vec=vec, pe=pe)
+
+            latent = latent[:, cond.shape[1]:, ...]
+        cache_manager.cache_step.post_cache_update(latent)
         latent = self.final_layer(latent, vec)
         return latent

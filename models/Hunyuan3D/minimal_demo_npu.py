@@ -1,3 +1,19 @@
+# Copyright 2007 Free Software Foundation Inc. https: fsf.org
+#
+# This file is part of MyProject.
+#
+# MyProject is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License version 3 only,
+# as published by the Free Software Foundation.
+#
+# MyProject is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with MyProject.  If not, see <https://www.gnu.org/licenses/>.
+
 # coding=utf-8
 # Adapted from
 # https://github.com/Tencent-Hunyuan/Hunyuan3D-2/blob/main/minimal_demo.py
@@ -37,6 +53,9 @@ from torch_npu.contrib import transfer_to_npu
 from hy3dgen.rembg import BackgroundRemover
 from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
 from hy3dgen.texgen import Hunyuan3DPaintPipeline
+from hy3dgen.cache import first_block_forward
+import hy3dgen.cache.cache_block
+from module.dit_cache_step.cache_step import cache_manager
 
 logging.basicConfig(level=logging.NOTSET)
 
@@ -55,8 +74,9 @@ def main():
     parser.add_argument('--multi_thread', action='store_true', default=False, help="开启delighting和render，bake的多线程并行")
     parser.add_argument('--use_render_npu', action='store_true', default=False, help="开启render_npu")
     parser.add_argument('--save_render', action='store_true', default=False, help="开启保存光栅化结果")
+    parser.add_argument('--cache_config', type=str, default='./hy3dgen/cache/cache_config.json', 
+    help="cache_config路径")
     args = parser.parse_args()
-    
     os.environ['MULTI_THREAD'] = 'true' if args.multi_thread else 'false'
     os.environ['USE_RENDER_NPU'] = 'true' if args.use_render_npu else 'false'
     os.environ['SAVE_RENDER'] = 'true' if args.save_render else 'false'
@@ -86,6 +106,12 @@ def main():
             subfolder='hunyuan3d-dit-v2-mv',
             variant='fp16'
         )
+        cache_manager.from_config(args.cache_config)
+        cache_block = pipeline_shapegen.model.double_blocks[0]
+        cache_block.forward = first_block_forward.__get__(cache_block, type(cache_block))
+        if args.full_graph and cache_manager.cache_step.cache_name != "NoCache":
+            logging.info("Cannot enable both graph mode and DIT-Cache simultaneously. graph mode has been disabled")
+            args.full_graph = False
         if args.full_graph:
             pipeline_shapegen.model = torch.compile(pipeline_shapegen.model, 
             dynamic=False, backend=npu_backend, fullgraph=True)
@@ -99,9 +125,15 @@ def main():
             generator=torch.manual_seed(12345),
             output_type='trimesh'
         )[0]
-
+        cache_manager.cache_step.print_statistics()
     else:
         pipeline_shapegen = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(args.model_path)
+        cache_manager.from_config(args.cache_config)
+        cache_block = pipeline_shapegen.model.double_blocks[0]
+        cache_block.forward = first_block_forward.__get__(cache_block, type(cache_block))
+        if args.full_graph and cache_manager.cache_step.cache_name != "NoCache":
+            logging.info("Cannot enable both graph mode and DIT-Cache simultaneously. graph mode has been disabled")
+            args.full_graph = False
         if args.full_graph:
             pipeline_shapegen.model = torch.compile(pipeline_shapegen.model, 
             dynamic=False, backend=npu_backend, fullgraph=True)
@@ -121,7 +153,7 @@ def main():
             generator=torch.manual_seed(12345),
             output_type='trimesh'
         )[0]
-    
+        cache_manager.cache_step.print_statistics()
     if args.face_reduce:
         mesh = mesh.simplify_quadric_decimation(face_count=20000) #减少面片数量
     pipeline_texgen = Hunyuan3DPaintPipeline.from_pretrained(args.model_path, subfolder='hunyuan3d-paint-v2-0')

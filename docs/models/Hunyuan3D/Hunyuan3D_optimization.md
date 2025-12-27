@@ -8,6 +8,7 @@ shapegen部分：
   - DIT 图模式适配
   - VAE-decoder 图模式适配
 - CPU-NPU搬运优化
+- DIT-Cache step-level适配（step-level指跳过/预测step范式）
 
 texgen部分：
 - 多线程并行光栅化
@@ -140,6 +141,58 @@ def timestep_embedding(t: Tensor, dim, max_period=10000, time_factor: float = 10
     half = dim // 2
     freqs = torch.exp(-math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32,device=t.device) / half)
 ```
+
+### DIT-Cache step-level适配
+- **基本原理：** DIT-Cache作为扩散模型推理加速的缓存框架，通过复用/预测已有的结果，减少冗余前向计算。其加速逻辑可清晰的分为Step-level和Block-level范式，Step-level通过判断不同采样步数step间的特定特征差异，通过阈值比较，决定是否跳过完整的step计算，直接复用或者预测缓存结果。
+- **Step-level典型方法：** 在Step-level加速范畴内，[FBCache](https://arxiv.org/pdf/2411.19108)的原理是基于First Block L1误差，比较第一个Block输出残差与上一步的第一个Block输出残差之间的差异，如果首块输出误差与上一轮首块输出误差差异小于指定阈值，就跳过当前步计算，复用残差，对当前步的输出进行估计。
+- **FBCache优化效果：** 通过63张图像生成任务，使用UNI3D指标：
+
+    |阈值|跳过率|采样耗时（s）|Uni3d-I|
+    |:---:|:---:|:---:|:---:|
+    |baseline|0|19.28|0.3748|
+    |0.04|50%|10.19|0.3704|
+    |0.05|63%|9.62|0.3687|
+    |0.06|66%|7.80|0.3690|
+- **启动方式：** 本代码模块通过修改cache_config.json文件决定是否使用Cache，Cache范式，Cache相关参数均在[models\Hunyuan3D\hy3dgen\cache\cache_config.json`](../../../models/Hunyuan3D/hy3dgen/cache/cache_config.json) 中直接修改，同时，使用如下指令可以自定义cache_config.json位置
+```python
+python minimal_demo_npu.py  --cache_config './hy3dgen/cache/cache_config.json'  #cache_config.json位置
+```      
+其中参数意义如下
+```python
+{
+    "cache_forward": "NoCache",# 直接设置Cache方案，目前支持FBCache,默认启动NOCache，也就是无ditcache方法，只需按照下面的提示将FBCache代替NoCache即可启动
+    "comment": "choose from FBCache/TeaCache, otherwise use NoCache", 
+    "FBCache":{
+            "cache_name": "FBCache",
+            "rel_l1_thresh": 0.05,  # FBCache阈值，阈值越大跳过越多，精度损失越大，需要平衡性能和精度
+            "latent": "latent",
+            "judge_input": "cache_latent"
+    },
+    "TeaCache":{
+            "cache_name" : "TeaCache",
+            "rel_l1_thresh": 0.1,  # TeaCache阈值，阈值越大跳过越多，精度损失越大，需要平衡性能和精度
+            "coefficients": [733.226126,-401.131952,67.5869174,-3.149879,0.0961237896],  #  TeaCache多项式拟合，通过输入输出进行拟合
+            "latent": "latent",
+            "judge_input": "modulated_inp"
+    },
+    "NoCache":{
+        "cache_name" : "NoCache"
+}
+}
+```
+- **框架位置：** 使用dit_cache_step作为自定义库，在模型forward处导入，具体如下：
+```  
+    cann-recipes-spatial-intelligence
+        +--- models #模型目录
+            +--- Hunyuan3D
+                +--- set_env.sh #激活module环境，能够导入step_level
+                +--- hy3dgen
+                    +--- cache #cache适配模型口
+                        +--- cache_block.py #dit-cache适配双流模块
+                        +--- cache_config.json #默认cache参数位置
+        +--- module
+            +--- dit_cache_step #step_level核心位置
+ ```
 
 ## texgen性能优化介绍
 ### 多线程并行光栅化
