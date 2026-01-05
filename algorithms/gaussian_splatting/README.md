@@ -1,7 +1,7 @@
 # 基于昇腾平台的3D Gausssian Spaltting的训推优化实践
 3D Gausssian Spaltting(3DGS)是2023年由法国和德国研究人员提出的一种可微渲染算法，以3D高斯椭球为核心图元，通过可微光栅化完成三维场景的重建与渲染，打破传统建模“速度与保真度不可兼得”的瓶颈。本项目旨在提供3DGS的昇腾适配版本。
 
-本项目基于NPU主要实现了以下优化点，具体内容可至[NPU 3DGS训推优化实践](../../docs/algorithms/)查看：
+本项目基于NPU主要实现了以下优化点，具体内容可至[NPU 3DGS训推优化实践](../../docs/algorithms/gaussian_splatting/)查看：
 - Alpha-blending优化算法及融合算子实现优化；
 - 视锥剔除融合算子优化；
 - Gaussian负载均衡优化；
