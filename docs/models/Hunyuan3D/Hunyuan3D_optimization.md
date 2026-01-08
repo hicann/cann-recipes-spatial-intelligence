@@ -144,15 +144,21 @@ def timestep_embedding(t: Tensor, dim, max_period=10000, time_factor: float = 10
 
 ### DIT-Cache step-level适配
 - **基本原理：** DIT-Cache作为扩散模型推理加速的缓存框架，通过复用/预测已有的结果，减少冗余前向计算。其加速逻辑可清晰的分为Step-level和Block-level范式，Step-level通过判断不同采样步数step间的特定特征差异，通过阈值比较，决定是否跳过完整的step计算，直接复用或者预测缓存结果。
-- **Step-level典型方法：** 在Step-level加速范畴内，[FBCache](https://arxiv.org/pdf/2411.19108)的原理是基于First Block L1误差，比较第一个Block输出残差与上一步的第一个Block输出残差之间的差异，如果首块输出误差与上一轮首块输出误差差异小于指定阈值，就跳过当前步计算，复用残差，对当前步的输出进行估计。
+- **Step-level典型方法：** ** 在Step-level加速范畴内，FBCache与TeaCache是典型的cache方法。[TeaCache](https://arxiv.org/pdf/2411.19108) 利用模型输入与输出的强相关性，通过Timestep Emebdding（输入）来估计输出差异：先利用该输入粗估输出变化，再通过多项式拟合修正缩放偏差，最终以累积差异作为判断标准，动态决定是否复用上一步被Cache的输出，避免冗余计算。[FBCache](https://arxiv.org/pdf/2411.19108)的原理是基于First Block L1误差，比较第一个Block输出残差与上一步的第一个Block输出残差之间的差异，如果首块输出误差与上一轮首块输出误差差异小于指定阈值，就跳过当前步计算，复用残差，对当前步的输出进行估计。
 - **FBCache优化效果：** 通过63张图像生成任务，使用UNI3D指标：
 
-    |阈值|跳过率|采样耗时（s）|Uni3d-I|
-    |:---:|:---:|:---:|:---:|
-    |baseline|0|19.28|0.3748|
-    |0.04|50%|10.19|0.3704|
-    |0.05|63%|9.62|0.3687|
-    |0.06|66%|7.80|0.3690|
+    |阈值|跳过率|采样耗时（s）|Uni3d-I|加速比|
+    |:---:|:---:|:---:|:---:|:---:|
+    |baseline|0|19.28|0.3748|x1.00|
+    |0.04|50%|10.19|0.3704|x1.89|
+    |0.05|63%|9.62|0.3687|x2.08|
+    |0.06|66%|7.80|0.3690|x2.47|
+- **TeaCache优化效果：** 通过63张图像生成任务，使用UNI3D/ULIP指标，结果如下，在跳过率为75%精度损失大于1%，因此推荐使用阈值0.1：
+    |阈值|跳过率|采样耗时（s）|Uni3d-I|ULIP-I|加速比|
+    |:---:|:---:|:---:|:---:|:---:|:---:|
+    |baseline|0|19.28|0.3179|0.2157|x1.00|
+    |0.1|48%|10.32|0.3090|0.2050|x1.86|
+    |0.2|75%|5.83|0.23908|0.1879|x3.30|
 - **启动方式：** 本代码模块通过修改cache_config.json文件决定是否使用Cache，Cache范式，Cache相关参数均在[models\Hunyuan3D\hy3dgen\cache\cache_config.json`](../../../models/Hunyuan3D/hy3dgen/cache/cache_config.json) 中直接修改，同时，使用如下指令可以自定义cache_config.json位置
 ```python
 python minimal_demo_npu.py  --cache_config './hy3dgen/cache/cache_config.json'  #cache_config.json位置
@@ -160,7 +166,7 @@ python minimal_demo_npu.py  --cache_config './hy3dgen/cache/cache_config.json'  
 其中参数意义如下
 ```python
 {
-    "cache_forward": "NoCache",# 直接设置Cache方案，目前支持FBCache,默认启动NOCache，也就是无ditcache方法，只需按照下面的提示将FBCache代替NoCache即可启动
+    "cache_forward": "NoCache",# 直接设置Cache方案，目前支持FBCache/TeaCache,默认启动NOCache，也就是无ditcache方法，只需按照下面的提示代替NoCache即可启动
     "comment": "choose from FBCache/TeaCache, otherwise use NoCache", 
     "FBCache":{
             "cache_name": "FBCache",

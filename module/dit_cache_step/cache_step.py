@@ -1,3 +1,20 @@
+# Adapted from 
+# https://github.com/ali-vilab/TeaCache,
+# https://github.com/chengzeyi/ParaAttention.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025.
+# Copyright (C) 2025 ali-vilab.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 import os
 import json
 from typing import Dict, Any, Optional, List
@@ -10,10 +27,10 @@ import torch.nn as nn
 import torch.distributed as dist
 
 
-default_config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache_config.json")
+DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache_config.json")
 
 
-def load_cache_config(config_path=default_config_path):
+def load_cache_config(config_path=DEFAULT_CONFIG_PATH):
     try:
         with open(config_path, "r", encoding="utf-8") as f:
             config = json.loads(f.read(), parse_float=lambda x: float(x))
@@ -80,9 +97,19 @@ class FBCache(StepCache):
     def __init__(self, cache_config):
         super().__init__()
         self.prev_block = None
-        self.rel_l1_thresh_fbcache = cache_config['FBCache']['rel_l1_thresh']
         self.diff_ratio = 0
-        self.cache_name = cache_config['FBCache']['cache_name']
+        try:
+            fb_cache_config = cache_config['FBCache']
+            self.rel_l1_thresh_fbcache = fb_cache_config['rel_l1_thresh']
+            self.cache_name = fb_cache_config['cache_name']
+        except KeyError as e:
+            missing_key = str(e).strip("'")
+            if missing_key == 'FBCache':
+                raise KeyError("The configuration file is missing the required 'FBCache' section.") from e
+            else:
+                raise KeyError(f"Missing config item in the 'FBCache' section: '{missing_key}'。") from e
+        except Exception as e:
+            raise RuntimeError(f"An unexpected error occurred while reading the cache configuration: {e}") from e
 
     def cache_update(self, current_block: torch.Tensor, current_latent: torch.Tensor):
         self.previous_residual = (current_latent - self.ori_latent).detach()
@@ -133,13 +160,23 @@ class FBCache(StepCache):
 class TeaCache(StepCache):
     def __init__(self, cache_config):
         super().__init__()
-        self.rel_l1_thresh_teacache = cache_config['TeaCache']['rel_l1_thresh']
-        self.coefficients = cache_config['TeaCache']['coefficients']
         self.prev_judge_input = None
         self.accumulated_rel_l1 = 0.0
-        self.rescale_func = np.poly1d(self.coefficients)
-        self.cache_name = cache_config['TeaCache']['cache_name']
         self.accumulated_rel_l1_distance = 0
+        try:
+            tea_cache_config = cache_config['TeaCache']
+            self.rel_l1_thresh_teacache = tea_cache_config['rel_l1_thresh']
+            self.cache_name = tea_cache_config['cache_name']
+            self.coefficients = tea_cache_config['coefficients']
+        except KeyError as e:
+            missing_key = str(e).strip("'")
+            if missing_key == 'TeaCache':
+                raise KeyError("The configuration file is missing the required 'TeaCache' section.") from e
+            else:
+                raise KeyError(f"Missing config item in the 'TeaCache' section: '{missing_key}'。") from e
+        except Exception as e:
+            raise RuntimeError(f"An unexpected error occurred while reading the cache configuration: {e}") from e
+        self.rescale_func = np.poly1d(self.coefficients)
 
     def cache_update(self, current_judge_input: torch.Tensor, current_latent: torch.Tensor):
         self.previous_residual = current_latent - self.ori_latent.detach()
@@ -206,5 +243,4 @@ class NoCache(StepCache):
     
     def print_statistics(self):
         logger.info("No Dit cache method applied")
-
 

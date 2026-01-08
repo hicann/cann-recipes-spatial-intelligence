@@ -423,7 +423,7 @@ class Hunyuan3DDiT(nn.Module):
         pe = None
         for i, block in enumerate(self.double_blocks):
             latent, cond = block(img=latent, txt=cond, vec=vec, pe=pe)
-            if i != 0 and cache_manager.cache_step.should_skip:
+            if i == 0 and cache_manager.cache_step.should_skip:
                 break
 
         if not cache_manager.cache_step.should_skip:

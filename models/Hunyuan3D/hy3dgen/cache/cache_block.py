@@ -174,7 +174,7 @@ def first_block_forward(
 
     img_modulated = self.img_norm1(img)
     img_modulated = (1 + img_mod1.scale) * img_modulated + img_mod1.shift
-    if cache_manager.cache_step.cache_name == "Tea":
+    if cache_manager.cache_step.cache_name == "TeaCache":
         judge_input = img_modulated
         args = {
             "latent": img,
@@ -183,6 +183,7 @@ def first_block_forward(
         should_calc, img = cache_manager.cache_step.pre_cache_process(args)
 
         if not should_calc:
+            cache_manager.cache_step.post_cache_update(img)
             return img, txt
     img_qkv = self.img_attn.qkv(img_modulated)
     img_q, img_k, img_v = rearrange(img_qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
