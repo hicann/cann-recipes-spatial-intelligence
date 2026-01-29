@@ -145,6 +145,7 @@ def timestep_embedding(t: Tensor, dim, max_period=10000, time_factor: float = 10
 ### DIT-Cache step-level适配
 - **基本原理：** DIT-Cache作为扩散模型推理加速的缓存框架，通过复用/预测已有的结果，减少冗余前向计算。其加速逻辑可清晰的分为Step-level和Block-level范式，Step-level通过判断不同采样步数step间的特定特征差异，通过阈值比较，决定是否跳过完整的step计算，直接复用或者预测缓存结果。
 - **Step-level典型方法：** ** 在Step-level加速范畴内，FBCache与TeaCache是典型的cache方法。[TeaCache](https://arxiv.org/pdf/2411.19108) 利用模型输入与输出的强相关性，通过Timestep Emebdding（输入）来估计输出差异：先利用该输入粗估输出变化，再通过多项式拟合修正缩放偏差，最终以累积差异作为判断标准，动态决定是否复用上一步被Cache的输出，避免冗余计算。[FBCache](https://arxiv.org/pdf/2411.19108)的原理是基于First Block L1误差，比较第一个Block输出残差与上一步的第一个Block输出残差之间的差异，如果首块输出误差与上一轮首块输出误差差异小于指定阈值，就跳过当前步计算，复用残差，对当前步的输出进行估计。
+- **block-level典型方法：** ** 在Block-level加速范畴内，Taylorseer是典型的以预测范式代替缓存的方法。[Taylorseer](https://github.com/Shenyi-Z/TaylorSeer) 解决了Step-level中因扩散模型中的特征相似性显著下降，导致的特征缓存引入的错误显著增加，损害生成质量。Taylorseer方法基于未来时间步的扩散模型特征可以基于前一时间步的值进行预测这一理论基础和特征在时间步间缓慢且连续变化的现象，采用微分方法近似特征的高阶导数，并应用Taylor级数预测后续特征。与直接重用缓存特征的方法不同，Taylorseer利用特征变化的连续性来预测未来特征，使扩散模型能够实现无训练且高比例的加速，而不会显著降低生成质量。 
 - **FBCache优化效果：** 通过63张图像生成任务，使用UNI3D指标：
 
     |阈值|跳过率|采样耗时（s）|Uni3d-I|加速比|
@@ -159,6 +160,32 @@ def timestep_embedding(t: Tensor, dim, max_period=10000, time_factor: float = 10
     |baseline|0|19.28|0.3179|0.2157|x1.00|
     |0.1|48%|10.32|0.3090|0.2050|x1.86|
     |0.2|75%|5.83|0.23908|0.1879|x3.30|
+- **Taylorseer性能优化效果：** 在推理步数为100，预热步数为3，截断步数为0，进行多轮生成，取每次生成时间的平均值：
+   |导数阶数 |跳过间隔|0|1|2|3|4|5|6|
+     |:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+    ||attention次数|4800|2496|1728|1344|1104|960|864|
+    ||MLP次数|6400|3328|2304|1792|1472|1280|1152|
+    ||预测步数|0|48|64|72|77|80|83|
+    |0|总时间|19.9s|10.24s|7.66s|6.17s|5.14s|4.58s|3.98s|
+    |0|加速比|1.00|1.85|2.60|3.23|3.87|4.35|5.00|
+    |0|性能提升|0%|46.0%|61.5%|69.0%|74.2%|77.0%|79.9%|
+    |1|总时间|20.44s|11.14s|8.02s|6.44s|5.51s|4.92s|4.35s|
+    |1|加速比|1.00|1.84|2.55|3.17|3.71|4.15|4.70|
+    |1|性能提升|0%|45.5%|60.8%|68.8%|72.9%|75.9%|78.7%|
+    |2|总时间|20.72s|11.47s|8.30s|6.67s|5.82s|5,23s|4.64s|
+    |2|加速比|1.00|1.81|2.50|3.11|3.56|3.96|4.47|
+    |2|性能提升|0%|44.7%|60.0%|67.9%|71.9%|74.8%|77.6%|
+
+
+    |导数/阶数|跳过率|加速比|Dit耗时|性能提升|Uni3d-I|ULIP-I|
+    |:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+    |baseline|0|1.00|19.26s|0%|0.374|0.221|
+    |O1N1|48|1.84|11.14s|45.5%|0.374|0.222|
+    |O1N3|72|3.17|6.4s|68.6%|0.372|0.220|
+    |O1N5|78|4.15|4.92s|75.9%|0.371|0.217|
+    |O2N1|48|1.81|11.47s|44.7%|0.374|0.222|
+    |O2N3|72|3.11|6.67s|67.9%|0.373|0.221|
+    |O2N5|78|3.96|5.23s|74.8%|0.368|0.217|
 - **启动方式：** 本代码模块通过修改cache_config.json文件决定是否使用Cache，Cache范式，Cache相关参数均在[models\Hunyuan3D\hy3dgen\cache\cache_config.json`](../../../models/Hunyuan3D/hy3dgen/cache/cache_config.json) 中直接修改，同时，使用如下指令可以自定义cache_config.json位置
 ```python
 python minimal_demo_npu.py  --cache_config './hy3dgen/cache/cache_config.json'  #cache_config.json位置
@@ -166,40 +193,56 @@ python minimal_demo_npu.py  --cache_config './hy3dgen/cache/cache_config.json'  
 其中参数意义如下
 ```python
 {
-    "cache_forward": "NoCache",# 直接设置Cache方案，目前支持FBCache/TeaCache,默认启动NOCache，也就是无ditcache方法，只需按照下面的提示代替NoCache即可启动
-    "comment": "choose from FBCache/TeaCache, otherwise use NoCache", 
-    "FBCache":{
-            "cache_name": "FBCache",
-            "rel_l1_thresh": 0.05,  # FBCache阈值，阈值越大跳过越多，精度损失越大，需要平衡性能和精度
-            "latent": "latent",
-            "judge_input": "cache_latent"
-    },
-    "TeaCache":{
-            "cache_name" : "TeaCache",
-            "rel_l1_thresh": 0.1,  # TeaCache阈值，阈值越大跳过越多，精度损失越大，需要平衡性能和精度
-            "coefficients": [733.226126,-401.131952,67.5869174,-3.149879,0.0961237896],  #  TeaCache多项式拟合，通过输入输出进行拟合
-            "latent": "latent",
-            "judge_input": "modulated_inp"
-    },
-    "NoCache":{
-        "cache_name" : "NoCache"
-}
-}
+        "cache_forward": "NoCache", #直接设置Cache方案，目前支持FBCache/TeaCache/Taylorseer,默认启动NoCache，也就是无ditcache方法，只需按照下面的提示代替NoCache即可启动
+        "comment": "choose from FBCache/TeaCache/Taylorseer, otherwise use NoCache",
+        "enable_separate_cfg": false, #CFG串行开关，适配wan2.2等CFG串行的项目，开启双分支TeaCache/FBcache,不支持Taylorseer，同时在非CFG串行项目保持关闭，Hunyuan3D为非CFG串行，因此关闭
+        "FBCache":{
+                "cache_name": "FBCache",
+                "rel_l1_thresh": 0.05, #FBCache阈值，阈值越大跳过越多，精度损失越大，需要平衡性能和精度
+                "latent": "latent",
+                "judge_input": "cache_latent"
+        },
+        "TeaCache":{
+                "cache_name" : "TeaCache",
+                "rel_l1_thresh": 0.1, #TeaCache阈值，阈值越大跳过越多，精度损失越大，需要平衡性能和精度
+                "coefficients": [733.226126,-401.131952,67.5869174,-3.149879,0.0961237896], #TeaCache多项式拟合，通过输入输出进行拟合
+                "warmup": 2, #预热步数，强制前面几步进行计算
+                "latent": "latent",
+                "judge_input": "modulated_inp"
+        },
+        "Taylorseer":{
+                "cache_name" : "Taylorseer",
+                "n_derivatives": 3, #Taylorseer导数设置，导数阶数越大，理论上对原特征拟合越优秀，但是过大的导数可能会出现过拟合现象，且占用显存会更大
+                "skip_interval_steps": 4, #Taylorseer计算间隔设置，注意 计算间隔 = 跳过计算步数+1 跳过计算间隔越大，对性能提升越明显，但是精度会下降
+                "warmup": 1, #预热步数，强制前面几步进行计算，避免前期特征变化明显的时候出现跳过计算
+                "cutoff_steps": 1, #截断步数，强制最后几步进行计算
+                "offload": false #offload开关，开启后可以降低显存占用
+        },
+        "NoCache":{
+            "cache_name" : "NoCache"
+    }
+    }
+
 ```
-- **框架位置：** 使用dit_cache_step作为自定义库，在模型forward处导入，具体如下：
+- **框架位置：** 使用dit_cache作为自定义库，dit_cache方案插入逻辑如下：
 ```  
     cann-recipes-spatial-intelligence
-        +--- models #模型目录
+        +--- models #模型替换模块
             +--- Hunyuan3D
-                +--- set_env.sh #激活module环境，能够导入step_level
+                +--- set_env.sh #激活module环境，能够导入module/dit_cache
+                +--- minimal_demo_npu.py #顶层推理入口，进行cache方案选择，模型层数传入和前向推理替换
                 +--- hy3dgen
                     +--- cache #cache适配模型口
-                        +--- cache_block.py #dit-cache适配双流模块
+                        +--- cache_block.py #Dit_Cache替换模块位置
                         +--- cache_config.json #默认cache参数位置
-        +--- module
-            +--- dit_cache_step #step_level核心位置
+                    +--- models
+                        +--- denoisers
+                            +--- hunyuan3ddit #Cache适配模型核心位置
+        +--- module #缓存策略模块
+            +--- dit_cache #Dit_Cache通用方案核心位置
+                    +--- __init__ #初始化
+                    +--- cache_method #Dit_Cache方案选择和方案设计
  ```
-
 ## texgen性能优化介绍
 ### 多线程并行光栅化
 **优化原因：** CPU侧执行光栅化会带来巨大时延，Hunyuan3D texgen在6个不同视角分别进行法向信息、位姿信息、纹理信息投影，共进行18次光栅化。由于光栅化相互之间与delighting来自不同数据通路，没有数据依赖关系，可以采用并行计算的方式，隐藏光栅化时延。

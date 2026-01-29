@@ -24,14 +24,14 @@
 import math
 import os
 from dataclasses import dataclass
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 
 import torch
 import torch_npu
 from einops import rearrange
 from torch import Tensor, nn
 
-from module.dit_cache_step.cache_step import cache_manager
+from module.dit_cache.cache_method import cache_manager
 
 
 def npu_fia(q, k, v, scale):
@@ -174,16 +174,25 @@ def first_block_forward(
 
     img_modulated = self.img_norm1(img)
     img_modulated = (1 + img_mod1.scale) * img_modulated + img_mod1.shift
-    if cache_manager.cache_step.cache_name == "TeaCache":
+    enable_separate_cfg = cache_manager.enable_separate_cfg
+    if not hasattr(self, 'cfg_step'):
+        self.cfg_step = 0
+    is_cond = True
+    if enable_separate_cfg:
+        is_cond = (self.cfg_step == 0)
+        self.cfg_step = 1 - self.cfg_step
+    if cache_manager.cache_method.cache_name == "TeaCache":
         judge_input = img_modulated
         args = {
             "latent": img,
-            "judge_input": judge_input
+            "judge_input": judge_input,
+            "is_cond": is_cond
         }
-        should_calc, img = cache_manager.cache_step.pre_cache_process(args)
+        should_calc, img = cache_manager.cache_method.pre_cache_process(args)
 
         if not should_calc:
-            cache_manager.cache_step.post_cache_update(img)
+            cache_manager.cache_method.post_cache_update(img)
+            cache_manager.cache_method.last_is_cond = is_cond
             return img, txt
     img_qkv = self.img_attn.qkv(img_modulated)
     img_q, img_k, img_v = rearrange(img_qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
@@ -207,11 +216,194 @@ def first_block_forward(
 
     txt = txt + txt_mod1.gate * self.txt_attn.proj(txt_attn)
     txt = txt + txt_mod2.gate * self.txt_mlp((1 + txt_mod2.scale) * self.txt_norm2(txt) + txt_mod2.shift)
-    if cache_manager.cache_step.cache_name == "FBCache":
+    if cache_manager.cache_method.cache_name == "FBCache":
         args = {
             "latent": img,
-            "judge_input": img.clone()
+            "judge_input": img.clone(),
+            "is_cond": is_cond
         }
-        should_calc, img = cache_manager.cache_step.pre_cache_process(args)
+        should_calc, img = cache_manager.cache_method.pre_cache_process(args)
     
     return img, txt
+
+
+def _double_block_full_compute(
+    block_self,
+    double_block_dict: dict,
+    pe, cache_dic, current
+):
+    img = double_block_dict['img']
+    txt = double_block_dict['txt']
+    img_mod1 = double_block_dict['img_mod1']
+    img_mod2 = double_block_dict['img_mod2']
+    txt_mod1 = double_block_dict['txt_mod1']
+    txt_mod2 = double_block_dict['txt_mod2']
+    current['module'] = 'img_attn'
+    img_modulated = block_self.img_norm1(img)
+    img_modulated = (1 + img_mod1.scale) * img_modulated + img_mod1.shift
+    img_qkv = block_self.img_attn.qkv(img_modulated)
+    img_q, img_k, img_v = rearrange(img_qkv, "B L (K H D) -> K B H L D", K=3, H=block_self.num_heads)
+    img_q, img_k = block_self.img_attn.norm(img_q, img_k, img_v)
+    txt_modulated = block_self.txt_norm1(txt)
+    txt_modulated = (1 + txt_mod1.scale) * txt_modulated + txt_mod1.shift
+    txt_qkv = block_self.txt_attn.qkv(txt_modulated)
+    txt_q, txt_k, txt_v = rearrange(txt_qkv, "B L (K H D) -> K B H L D", K=3, H=block_self.num_heads)
+    txt_q, txt_k = block_self.txt_attn.norm(txt_q, txt_k, txt_v)
+    q = torch.cat((txt_q, img_q), dim=2)
+    k = torch.cat((txt_k, img_k), dim=2)
+    v = torch.cat((txt_v, img_v), dim=2)
+    attn = attention(q, k, v, pe=pe)
+    txt_attn, img_attn = attn[:, : txt.shape[1]], attn[:, txt.shape[1]:]
+    img_attn_out = block_self.img_attn.proj(img_attn)
+    img = img + img_mod1.gate * img_attn_out
+    cache_manager.cache_method.derivative_approximation(cache_dic, current, img_attn_out)
+
+    current['module'] = 'img_mlp'
+    img_mlp_in = (1 + img_mod2.scale) * block_self.img_norm2(img) + img_mod2.shift
+    img_mlp_out = block_self.img_mlp(img_mlp_in)
+    img = img + img_mod2.gate * img_mlp_out
+    cache_manager.cache_method.derivative_approximation(cache_dic, current, img_mlp_out)
+
+    current['module'] = 'txt_attn'
+    txt_attn_out = block_self.txt_attn.proj(txt_attn)
+    txt = txt + txt_mod1.gate * txt_attn_out
+    cache_manager.cache_method.derivative_approximation(cache_dic, current, txt_attn_out)
+
+    current['module'] = 'txt_mlp'
+    txt_mlp_in = (1 + txt_mod2.scale) * block_self.txt_norm2(txt) + txt_mod2.shift
+    txt_mlp_out = block_self.txt_mlp(txt_mlp_in)
+    txt = txt + txt_mod2.gate * txt_mlp_out
+    cache_manager.cache_method.derivative_approximation(cache_dic, current, txt_mlp_out)
+    return img, txt
+
+
+def _double_block_taylor_compute(
+    block_self,
+    double_block_dict: dict,
+    cache_dic, current
+):
+    img = double_block_dict['img']
+    txt = double_block_dict['txt']
+    img_mod1 = double_block_dict['img_mod1']
+    img_mod2 = double_block_dict['img_mod2']
+    txt_mod1 = double_block_dict['txt_mod1']
+    txt_mod2 = double_block_dict['txt_mod2']
+    current['module'] = 'img_attn'
+    img_attn_out = cache_manager.cache_method.taylor_formula(cache_dic, current)
+    img = img + img_mod1.gate * img_attn_out
+
+    current['module'] = 'img_mlp'
+    img_mlp_out = cache_manager.cache_method.taylor_formula(cache_dic, current)
+    img = img + img_mod2.gate * img_mlp_out 
+
+    current['module'] = 'txt_attn'
+    txt_attn_out = cache_manager.cache_method.taylor_formula(cache_dic, current)
+    txt = txt + txt_mod1.gate * txt_attn_out
+
+    current['module'] = 'txt_mlp'
+    txt_mlp_out = cache_manager.cache_method.taylor_formula(cache_dic, current)
+    txt = txt + txt_mod2.gate * txt_mlp_out
+    return img, txt
+
+
+def double_block_forward(
+    self, img: Tensor, txt: Tensor, vec: Tensor, pe: Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    cache_dic = cache_manager.cache_method.cache_dic
+    current = cache_manager.cache_method.current
+    double_stream_layers = cache_manager.cache_method.double_stream_layers
+    current_layer_idx = cache_manager.cache_method.layer_counter - 1
+    current_layer_idx = current_layer_idx % double_stream_layers
+    current.update({
+        "stream": "double_stream",
+        "layer": current_layer_idx,
+        "step": cache_manager.cache_method.num_steps
+    })
+    cache_manager.cache_method.update_layer_counter()
+
+    img_mod1, img_mod2 = self.img_mod(vec)
+    txt_mod1, txt_mod2 = self.txt_mod(vec)
+    double_block_dict = {
+        'img': img,
+        'txt': txt,
+        'img_mod1': img_mod1,
+        'img_mod2': img_mod2,
+        'txt_mod1': txt_mod1,
+        'txt_mod2': txt_mod2
+    }
+    if current.get('type') == 'full':
+        img, txt = _double_block_full_compute(
+            self, double_block_dict, pe, cache_dic, current
+        )
+    elif current.get('type') == 'taylor_cache':
+        img, txt = _double_block_taylor_compute(
+            self, double_block_dict, cache_dic, current
+        )
+    else:
+        raise ValueError(f"unsupported current type: {current.get('type')}!, Only full/taylor_cache are allowed")
+    return img, txt
+
+
+def _single_block_full_compute(
+    block_self,
+    single_block_dict: dict, 
+    pe, cache_dic, current
+):
+    x = single_block_dict['x']
+    mod = single_block_dict['mod']
+    x_mod = (1 + mod.scale) * block_self.pre_norm(x) + mod.shift
+    qkv, mlp = torch.split(block_self.linear1(x_mod), [3 * block_self.hidden_size, block_self.mlp_hidden_dim], dim=-1)
+
+    q, k, v = rearrange(qkv, "B L (K H D) -> K B H L D", K=3, H=block_self.num_heads)
+    q, k = block_self.norm(q, k, v)
+    attn = attention(q, k, v, pe=pe)
+    current['module'] = 'total'
+    output = block_self.linear2(torch.cat((attn, block_self.mlp_act(mlp)), 2))
+    cache_manager.cache_method.derivative_approximation(cache_dic, current, output)
+    x = x + mod.gate * output
+    return x
+
+
+def _single_block_taylor_compute(
+    block_self,
+    single_block_dict: dict, 
+    cache_dic, current
+):
+    x = single_block_dict['x']
+    mod = single_block_dict['mod']
+    current['module'] = 'total'
+    output = cache_manager.cache_method.taylor_formula(cache_dic, current)
+    x = x + mod.gate * output
+    return x
+
+
+def single_block_forward(
+    self, x: Tensor, vec: Tensor, pe: Tensor
+) -> Tensor:
+    cache_dic = cache_manager.cache_method.cache_dic
+    current = cache_manager.cache_method.current
+    double_stream_layers = cache_manager.cache_method.double_stream_layers
+    current_layer_idx = cache_manager.cache_method.layer_counter - 1
+    single_layer_idx = (current_layer_idx - double_stream_layers) % cache_manager.cache_method.single_stream_layers
+    current.update({
+        "stream": "single_stream",
+        "layer": single_layer_idx,
+        "step": cache_manager.cache_method.num_steps
+    })
+    cache_manager.cache_method.update_layer_counter()
+    mod, _ = self.modulation(vec)
+    single_block_dict = {
+        'x': x,
+        'mod': mod,
+    }
+    if current.get('type') == 'full':
+        x = _single_block_full_compute(
+            self, single_block_dict, pe, cache_dic, current
+        )
+    elif current.get('type') == 'taylor_cache':
+        x = _single_block_taylor_compute(
+            self, single_block_dict, cache_dic, current
+        )
+    else:
+        raise ValueError(f"unsupported current type: {current.get('type')}!, Only full/taylor_cache are allowed")
+    return x

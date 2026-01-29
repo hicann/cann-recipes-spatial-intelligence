@@ -53,9 +53,9 @@ from torch_npu.contrib import transfer_to_npu
 from hy3dgen.rembg import BackgroundRemover
 from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
 from hy3dgen.texgen import Hunyuan3DPaintPipeline
-from hy3dgen.cache import first_block_forward
+from hy3dgen.cache import first_block_forward, double_block_forward, single_block_forward
 import hy3dgen.cache.cache_block
-from module.dit_cache_step.cache_step import cache_manager
+from module.dit_cache.cache_method import cache_manager
 
 logging.basicConfig(level=logging.NOTSET)
 
@@ -80,6 +80,8 @@ def main():
     os.environ['MULTI_THREAD'] = 'true' if args.multi_thread else 'false'
     os.environ['USE_RENDER_NPU'] = 'true' if args.use_render_npu else 'false'
     os.environ['SAVE_RENDER'] = 'true' if args.save_render else 'false'
+
+
     if args.full_graph:
         config = torchair.CompilerConfig()
         config.experimental_config.keep_inference_input_mutations = True
@@ -106,10 +108,23 @@ def main():
             subfolder='hunyuan3d-dit-v2-mv',
             variant='fp16'
         )
-        cache_manager.from_config(args.cache_config)
-        cache_block = pipeline_shapegen.model.double_blocks[0]
-        cache_block.forward = first_block_forward.__get__(cache_block, type(cache_block))
-        if args.full_graph and cache_manager.cache_step.cache_name != "NoCache":
+        double_stream_layers = len(pipeline_shapegen.model.double_blocks)
+        single_stream_layers = len(pipeline_shapegen.model.single_blocks)
+        cache_params = {
+            "num_steps": 100,
+            "double_stream_layers": double_stream_layers,
+            "single_stream_layers": single_stream_layers,   
+        }
+        cache_manager.from_config(args.cache_config, cache_params=cache_params)
+        if cache_manager.cache_method.cache_name == "Taylorseer":
+            for block in pipeline_shapegen.model.double_blocks:
+                block.forward = double_block_forward.__get__(block, type(block))
+            for block in pipeline_shapegen.model.single_blocks:
+                block.forward = single_block_forward.__get__(block, type(block))
+        else:
+            cache_block = pipeline_shapegen.model.double_blocks[0]
+            cache_block.forward = first_block_forward.__get__(cache_block, type(cache_block))
+        if args.full_graph and cache_manager.cache_method.cache_name != "NoCache":
             logging.info("Cannot enable both graph mode and DIT-Cache simultaneously. graph mode has been disabled")
             args.full_graph = False
         if args.full_graph:
@@ -119,19 +134,32 @@ def main():
             dynamic=False, backend=npu_backend, fullgraph=True)
         mesh = pipeline_shapegen(
             image=images,
-            num_inference_steps=50,
+            num_inference_steps=100,
             octree_resolution=380,
             num_chunks=20000,
             generator=torch.manual_seed(12345),
             output_type='trimesh'
         )[0]
-        cache_manager.cache_step.print_statistics()
+        cache_manager.cache_method.print_statistics()
     else:
         pipeline_shapegen = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(args.model_path)
-        cache_manager.from_config(args.cache_config)
-        cache_block = pipeline_shapegen.model.double_blocks[0]
-        cache_block.forward = first_block_forward.__get__(cache_block, type(cache_block))
-        if args.full_graph and cache_manager.cache_step.cache_name != "NoCache":
+        double_stream_layers = len(pipeline_shapegen.model.double_blocks)
+        single_stream_layers = len(pipeline_shapegen.model.single_blocks)
+        cache_params = {
+            "num_steps": 100,
+            "double_stream_layers": double_stream_layers,
+            "single_stream_layers": single_stream_layers,   
+        }
+        cache_manager.from_config(args.cache_config, cache_params=cache_params)
+        if cache_manager.cache_method.cache_name == "Taylorseer":
+            for block in pipeline_shapegen.model.double_blocks:
+                block.forward = double_block_forward.__get__(block, type(block))
+            for block in pipeline_shapegen.model.single_blocks:
+                block.forward = single_block_forward.__get__(block, type(block))
+        else:
+            cache_block = pipeline_shapegen.model.double_blocks[0]
+            cache_block.forward = first_block_forward.__get__(cache_block, type(cache_block))
+        if args.full_graph and cache_manager.cache_method.cache_name != "NoCache":
             logging.info("Cannot enable both graph mode and DIT-Cache simultaneously. graph mode has been disabled")
             args.full_graph = False
         if args.full_graph:
@@ -147,13 +175,13 @@ def main():
 
         mesh = pipeline_shapegen(
             image=image,
-            num_inference_steps=50,
+            num_inference_steps=100,
             octree_resolution=380,
             num_chunks=20000,
             generator=torch.manual_seed(12345),
             output_type='trimesh'
         )[0]
-        cache_manager.cache_step.print_statistics()
+        cache_manager.cache_method.print_statistics()
     if args.face_reduce:
         mesh = mesh.simplify_quadric_decimation(face_count=20000) #减少面片数量
     pipeline_texgen = Hunyuan3DPaintPipeline.from_pretrained(args.model_path, subfolder='hunyuan3d-paint-v2-0')

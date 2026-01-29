@@ -32,7 +32,7 @@ import torch_npu
 from einops import rearrange
 from torch import Tensor, nn
 
-from module.dit_cache_step import cache_manager
+from module.dit_cache import cache_manager
 
 
 def npu_fia(q, k, v, scale):
@@ -423,16 +423,16 @@ class Hunyuan3DDiT(nn.Module):
         pe = None
         for i, block in enumerate(self.double_blocks):
             latent, cond = block(img=latent, txt=cond, vec=vec, pe=pe)
-            if i == 0 and cache_manager.cache_step.should_skip:
+            if i == 0 and cache_manager.cache_method.should_skip:
                 break
 
-        if not cache_manager.cache_step.should_skip:
+        if not cache_manager.cache_method.should_skip:
 
             latent = torch.cat((cond, latent), 1)
             for block in self.single_blocks:
                 latent = block(latent, vec=vec, pe=pe)
 
             latent = latent[:, cond.shape[1]:, ...]
-        cache_manager.cache_step.post_cache_update(latent)
+        cache_manager.cache_method.post_cache_update(latent)
         latent = self.final_layer(latent, vec)
         return latent
