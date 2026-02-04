@@ -42,7 +42,7 @@ def load_cache_config(config_path=DEFAULT_CONFIG_PATH):
 
 
 def _validate_config_keys(config: dict):
-    required_keys = ["cache_forward", "enable_separate_cfg", "FBCache", "TeaCache", "NoCache", "Taylorseer"]
+    required_keys = ["cache_forward", "enable_separate_cfg", "FBCache", "TeaCache", "NoCache", "TaylorSeer"]
     missed_keys = [k for k in required_keys if k not in config]
     if missed_keys:
         raise ValueError(f"Missing required key(s): {','.join(missed_keys)}")
@@ -64,8 +64,8 @@ class CacheManager():
             self.cache_method = FBCache(self.config, self.cache_params)
         elif self.config["cache_forward"] == "TeaCache":
             self.cache_method = TeaCache(self.config, self.cache_params)
-        elif self.config["cache_forward"] == "Taylorseer":
-            self.cache_method = Taylorseer(self.config, self.cache_params)
+        elif self.config["cache_forward"] == "TaylorSeer":
+            self.cache_method = TaylorSeer(self.config, self.cache_params)
         else:
             self.cache_method = NoCache()
         logger.info(f"Apply dit cache method: {self.cache_method.cache_name}!")
@@ -82,7 +82,7 @@ class BaseCache():
         self.previous_residual = None
         self.ori_latent = None
         self.should_skip = False
-        self.stream_init()
+        self.streams_init()
         self.copy_events = []
         self.cal_events = []
 
@@ -90,17 +90,17 @@ class BaseCache():
         self.num_steps += 1
 
     def print_statistics(self):
-        raise NotImplementedError("need print_statistics")
+        raise NotImplementedError("Need print_statistics")
     
     def reuse_cache(self, is_cond: bool = True) -> torch.Tensor:
         idx = 1 if is_cond else 0
         return self.previous_residual[idx] + self.ori_latent
 
     def pre_cache_process(self, args: Dict[str, torch.Tensor]) -> (bool, torch.Tensor):
-        raise NotImplementedError("need pre_cache_process")
+        raise NotImplementedError("Need pre_cache_process")
 
     def post_cache_update(self, latent: torch.Tensor):
-        raise NotImplementedError("need post_cache_update")
+        raise NotImplementedError("Need post_cache_update")
 
     def derivative_approximation(self, cache_dic: Dict, current: Dict, feature: torch.Tensor):
         """
@@ -111,49 +111,52 @@ class BaseCache():
         if len(current.get('activated_steps', [])) < 2:
             return
 
-        difference_distance = current['activated_steps'][-1] - current['activated_steps'][-2]
-        if difference_distance == 0:
-            raise ValueError("invalid step difference")
+        distance = current['activated_steps'][-1] - current['activated_steps'][-2]
+        if distance == 0:
+            raise ValueError("Invalid step difference")
         updated_taylor_factors = {}
         updated_taylor_factors[0] = feature
-        updated_cache = cache_dic['cache'][-1][current['stream']][current['layer']][current['module']]
+        
         if self.offload:
+            self._offload_derivative_approximation(cache_dic, current, distance, updated_taylor_factors)
 
-            copy_stream = torch.npu.Stream()
-
+        else:
+            updated_cache = cache_dic['cache'][-1][current['stream']][current['layer']][current['module']]
             for i in range(cache_dic['max_order']):
                 if (updated_cache.get(i, None) is not None) and (current['step'] > cache_dic['warmup'] - 2):
                     try:
                         updated_taylor_factors[i + 1] = (
-                            updated_taylor_factors[i] - updated_cache[i].npu()) / difference_distance
-                    except KeyError as e:
-                        raise KeyError("Missing taylor factor") from e
-                else:
-                    break
-            utf = updated_taylor_factors 
-
-            copy_stream.wait_stream(torch.npu.current_stream())
-            with torch.npu.stream(copy_stream):
-                if isinstance(utf, dict):
-                    utf = {k: (v.to('cpu', non_blocking=True) if torch.is_tensor(v) else v) for k, v in utf.items()}
-                else: 
-                    utf = utf.to('cpu', non_blocking=True)
-
-            torch.npu.current_stream().wait_stream(copy_stream)
-            cache_dic['cache'][-1][current['stream']][current['layer']][current['module']] = utf
-        else:
-            for i in range(cache_dic['max_order']):
-                if (updated_cache.get(i, None) is not None) and (current['step'] > cache_dic['warmup'] - 2):
-                    try:    
-                        updated_taylor_factors[i + 1] = (
-                            updated_taylor_factors[i] - updated_cache[i]) / difference_distance
+                            updated_taylor_factors[i] - updated_cache[i].to('npu', non_blocking=True)) / distance
                     except KeyError as e:
                         raise KeyError("Missing taylor factor") from e
                 else:
                     break
             utf = updated_taylor_factors 
             cache_dic['cache'][-1][current['stream']][current['layer']][current['module']] = utf
+
+    def _offload_derivative_approximation(self, cache_dic: Dict, current: Dict, distance, utf):
+        copy_stream = self.copy_stream
+        updated_cache = cache_dic['cache'][-1][current['stream']][current['layer']][current['module']]
+        for i in range(cache_dic['max_order']):
+            if (updated_cache.get(i, None) is not None) and (current['step'] > cache_dic['warmup'] - 2):
+                try:
+                    utf[i + 1] = (utf[i] - updated_cache[i].to('npu', non_blocking=True)) / distance
+                except KeyError as e:
+                    raise KeyError("Missing taylor factor") from e
+            else:
+                break
+
+        copy_stream.wait_stream(torch.npu.current_stream())
+        with torch.npu.stream(copy_stream):
+            if isinstance(utf, dict):
+                utf = {k: (v.to('cpu', non_blocking=True) if torch.is_tensor(v) else v) for k, v in utf.items()}
+            else: 
+                utf = utf.to('cpu', non_blocking=True)
+
+        torch.npu.current_stream().wait_stream(copy_stream)
+        cache_dic['cache'][-1][current['stream']][current['layer']][current['module']] = utf
         
+
     def taylor_formula(self, cache_dic: Dict, current: Dict) -> torch.Tensor: 
         """
         Compute Taylor expansion error
@@ -164,7 +167,7 @@ class BaseCache():
         x = current['step'] - current['activated_steps'][-1]
         output = 0
         if self.offload:
-            output = self.offload_taylor_formula(cache_dic, current, x, output)
+            output = self._offload_taylor_formula(cache_dic, current, x, output)
         else:
             sorted_de = [updated_cache[key] for key in sorted(updated_cache.keys())]
             for i, factor in enumerate(sorted_de):
@@ -172,27 +175,7 @@ class BaseCache():
         
         return output
 
-    @staticmethod
-    def taylor_cache_init(self, cache_dic: Dict, current: Dict) -> torch.Tensor: 
-        """
-        Initialize Taylor cache, expanding storage areas for Taylor series derivatives
-        :param cache_dic: Cache dictionary
-        :param current: Information of the current step
-        """
-        if current['step'] == 0:
-            cache_dic['cache'][-1][current['stream']][current['layer']][current['module']] = {}
-
-    def stream_init(self):
-        self.copy_stream = torch.npu.Stream()
-        self.cal_stream = torch.npu.Stream()
-
-    def events_init(self, copy_num=0):
-        self.copy_events = [torch.npu.Event() for i in range(copy_num)]
-        self.cal_events = [torch.npu.Event() for i in range(copy_num)]
-
-    def offload_taylor_formula(
-        self, cache_dic, current, x, output, device='npu'
-    ):
+    def _offload_taylor_formula(self, cache_dic, current, x, output, device='npu'):
         updated_cache = cache_dic['cache'][-1][current['stream']][current['layer']][current['module']]
         copy_num = len(updated_cache)
         self.events_init(copy_num)
@@ -213,14 +196,22 @@ class BaseCache():
 
         torch.npu.current_stream().wait_stream(self.cal_stream)
         return output
-    
 
-class Taylorseer(BaseCache):
+    def streams_init(self):
+        self.copy_stream = torch.npu.Stream()
+        self.cal_stream = torch.npu.Stream()
+
+    def events_init(self, copy_num=0):
+        self.copy_events = [torch.npu.Event() for i in range(copy_num)]
+        self.cal_events = [torch.npu.Event() for i in range(copy_num)]
+
+
+class TaylorSeer(BaseCache):
     def __init__(self, cache_config, cache_params=None):
         super().__init__()
         self.cache_params = cache_params
         try:
-            taylor_config = cache_config['Taylorseer'] 
+            taylor_config = cache_config['TaylorSeer']
             self.cache_name = taylor_config['cache_name']
             self.n_derivatives = taylor_config['n_derivatives']
             self.skip_interval_steps = taylor_config['skip_interval_steps']
@@ -233,10 +224,10 @@ class Taylorseer(BaseCache):
             self.total_steps = self.cache_params.get("num_steps")
         except KeyError as e:
             missing_key = str(e).strip("'")
-            if missing_key == 'Taylorseer':
-                raise KeyError("The configuration file is missing the required 'Taylorseer' section.") from e
+            if missing_key == 'TaylorSeer':
+                raise KeyError("The configuration file is missing the required 'TaylorSeer' section.") from e
             else:
-                raise KeyError(f"Missing config item in the 'Taylorseer' section: '{missing_key}'。") from e
+                raise KeyError(f"Missing config item in the 'TaylorSeer' section: '{missing_key}'。") from e
         except Exception as e:
             raise RuntimeError(f"An unexpected error occurred while reading the cache configuration: {e}") from e
         self.total_layers_per_step = self.double_stream_layers + self.single_stream_layers
@@ -286,9 +277,11 @@ class Taylorseer(BaseCache):
             if step not in self.activated_steps:
                 self.activated_steps.append(step)
                 self.total_compute_steps += 1
+            logger.info(f"步数{step},FUll计算, 预热：{is_warmup},间隔={is_interval_full}")
             return "full"
         else:
             self.total_predict_steps += 1
+            logger.info(f"步数{step},taylor预测") 
             return "taylor_cache"    
 
     def update_layer_counter(self):
@@ -310,7 +303,7 @@ class Taylorseer(BaseCache):
     def print_statistics(self):
         predict_rate = (self.total_predict_steps / self.total_steps * 100)
         logger.info(
-            f"\n cache strategy:Taylorseer // [total step]: {self.num_steps} \n"
+            f"\n cache strategy:TaylorSeer // [total step]: {self.num_steps} \n"
             f"// [predict_steps]: {self.total_predict_steps} //  [predict_rate]: {predict_rate:.2f}%\n"
             f"// [Derivative Order]: {self.n_derivatives} // [skip interval]: {self.skip_interval_steps}\n"
         )
@@ -319,7 +312,7 @@ class Taylorseer(BaseCache):
 class FBCache(BaseCache):
     def __init__(self, cache_config, cache_params=None):
         super().__init__()
-        self.prev_block = [None, None]  
+        self.prev_block = [None, None]
         self.diff_ratio = 0
         self.previous_residual = [None, None]
         self.last_is_cond = False
@@ -391,9 +384,9 @@ class FBCache(BaseCache):
 class TeaCache(BaseCache):
     def __init__(self, cache_config, cache_params=None):
         super().__init__()
-        self.prev_judge_input = [None, None]  
-        self.previous_residual = [None, None] 
-        self.accumulated_rel_l1 = [0.0, 0.0] 
+        self.prev_judge_input = [None, None]
+        self.previous_residual = [None, None]
+        self.accumulated_rel_l1 = [0.0, 0.0]
         self.accumulated_rel_l1_distance = 0
         try:
             tea_cfg_config = cache_config['TeaCache']
@@ -460,7 +453,7 @@ class TeaCache(BaseCache):
         judge_input = args["judge_input"]
         is_cond = args.get("is_cond", True)
         if judge_input is None:
-            raise ValueError("need judge_input")
+            raise ValueError("Need judge_input")
         self.ori_latent = latent.clone()
         can_reuse = self.should_cache(judge_input, is_cond)
         should_calc = not can_reuse

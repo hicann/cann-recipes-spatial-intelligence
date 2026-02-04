@@ -116,7 +116,7 @@ def main():
             "single_stream_layers": single_stream_layers,   
         }
         cache_manager.from_config(args.cache_config, cache_params=cache_params)
-        if cache_manager.cache_method.cache_name == "Taylorseer":
+        if cache_manager.cache_method.cache_name == "TaylorSeer":
             for block in pipeline_shapegen.model.double_blocks:
                 block.forward = double_block_forward.__get__(block, type(block))
             for block in pipeline_shapegen.model.single_blocks:
@@ -151,7 +151,7 @@ def main():
             "single_stream_layers": single_stream_layers,   
         }
         cache_manager.from_config(args.cache_config, cache_params=cache_params)
-        if cache_manager.cache_method.cache_name == "Taylorseer":
+        if cache_manager.cache_method.cache_name == "TaylorSeer":
             for block in pipeline_shapegen.model.double_blocks:
                 block.forward = double_block_forward.__get__(block, type(block))
             for block in pipeline_shapegen.model.single_blocks:

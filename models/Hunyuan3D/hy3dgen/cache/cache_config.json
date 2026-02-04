@@ -1,6 +1,6 @@
 {
         "cache_forward": "NoCache",
-        "comment": "choose from FBCache/TeaCache/Taylorseer, otherwise use NoCache",
+        "comment": "choose from FBCache/TeaCache/TaylorSeer, otherwise use NoCache",
         "enable_separate_cfg": false,
         "FBCache":{
                 "cache_name": "FBCache",
@@ -16,8 +16,8 @@
                 "latent": "latent",
                 "judge_input": "modulated_inp"
         },
-        "Taylorseer":{
-                "cache_name" : "Taylorseer",
+        "TaylorSeer":{
+                "cache_name" : "TaylorSeer",
                 "n_derivatives": 3,
                 "skip_interval_steps": 4,
                 "warmup": 1,
