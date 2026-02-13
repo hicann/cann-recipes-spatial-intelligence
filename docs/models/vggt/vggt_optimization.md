@@ -8,6 +8,8 @@
 - 支持NPU npu_add_layer_norm融合算子
 - 权重格式转为BF16
 - 二维卷积核私有格式提前转换
+- 支持NPU  npu_fused_infer_attention_score融合算子
+- 支持Ulysses与Ringattention序列并行推理
 ---
 ## 性能优化介绍
 ### Cos/Sin算子优化
@@ -242,7 +244,69 @@ model = cast_model_weight(model)#调用cast_model_weight函数，在推理前提
 predictions = model(images)
 ```
 
----
+### NPU fused_infer_attention_score算子适配
+- **优化原因：** npu_fused_infer_attention_score融合算子是Ascend Extension for PyTorch提供的适配增量和全量推理场景的FlashAttention算子，在昇腾环境上，相比SDPA有更好的推理性能表现。
+- **优化方式：** 针对Frame-Global双层架构实现算子分离。Frame Attention处理帧内短序列，保持使用PyTorch SDPA；Global Attention处理跨帧长序列，切换到NPU FIA融合算子。
+```python
+# 原始：统一使用SDPA
+x = F.scaled_dot_product_attention(q, k, v, dropout_p=...)
+
+# 优化：根据is_global_attention分流
+if self.is_global_attention:
+    # Global用FIA
+    x = torch_npu.npu_fused_infer_attention_score(
+        q, k, v, num_heads=num_heads, scale=scale,
+        input_layout="BNSD", pre_tokens=65535, 
+        next_tokens=65535, inner_precise=0
+    )[0]
+else:
+    # Frame用SDPA
+    x = F.scaled_dot_product_attention(q, k, v, ...)
+```
+
+### 序列并行的推理适配
+- **优化原因：** VGGT网络原生仅支持单卡推理，所有计算在一张卡上完成，未能有效利用Atlas A2的多卡优势；多卡并行将序列切分到各rank，可以有效提升整网的推理性能。
+- **优化方式：**
+
+  1.Ulysses并行将num_heads维度切分到多卡，通过all-to-all通信将序列维度聚合，使每个rank能看到完整序列但只处理部分attention heads。
+  
+  2.Ring并行将序列切分到多卡，通过overlap策略隐藏通信开销：利用NPU FIA算子返回的LSE（log-sum-exp）信息，支持分块attention结果的数值稳定合并。
+```python
+# Ulysses并行（头维度切分）
+# 通过all-to-all通信实现head和sequence维度的互换
+# 输入: [B, shard_s, H, D] - 每个rank持有部分序列、完整头
+# 输出: [B, S, shard_hc, D] - 每个rank持有完整序列、部分头
+def _all_to_all_head_to_seq(self, input_):
+    input_t = input_.reshape(bs, shard_s, world_size, shard_hc, d)
+    input_t = input_t.permute(2, 1, 0, 3, 4).contiguous()
+    dist.all_to_all_single(output, input_t, group=self.ulysses_pg)
+```
+```python
+# Ring并行（序列维度切分）
+# Ring Attention with Overlap: 边通信边计算
+def _ring_attention_overlap(self, params):
+    # Step 1: 异步启动K/V的allgather
+    k_handle = dist.all_gather_into_tensor(k_gathered, k, async_op=True)
+    v_handle = dist.all_gather_into_tensor(v_gathered, v, async_op=True)
+    # Step 2: 计算local attention (Q @ local_K/V)
+    out_local, lse_local = self._compute_attention_with_lse(q, k, v)
+    # Step 3: 等待通信完成，计算cross attention (Q @ other_K/V)
+    k_handle.wait()
+    out_others, lse_others = self._compute_attention_with_lse(q, k_others, v_others)
+    # Step 4: 使用LSE合并结果
+    out_merged = self._merge_two_outputs(out_local, lse_local, out_others, lse_others)
+```
+- **额外影响：** 对VGGT网络适配序列并行后，以下是整网精度情况
+  |并行度|AUC@30|
+  |:---:|:---:|
+  |单卡|91.10|
+  |Ulysses=2|91.12|
+  |Ulysses=4|91.10|
+  |Ulysses=8|90.86|
+  |Ring=2|91.12|
+  |Ring=4|91.09|
+  |Ring=8|90.88|
+
 ## 性能优化指标
 本方案使用8卡Atlas 800I A2推理产品，输入vggt提供的样例数据(`examples/kitchen`)，包含25张图片，性能指标如下
 |使能方法|推理耗时（ms）|
@@ -253,3 +317,13 @@ predictions = model(images)
 |npu_add_layer_norm融合算子|1208.17|
 |权重格式转BF16|1128.18|
 |私有格式提前转换|1121.09|
+
+采用序列并行的多卡推理后，性能提升如下
+|并行度|推理提升|
+|:---:|:---:|
+|Ulysses=2|1.75x|
+|Ulysses=4|3.43x|
+|Ulysses=8|6.47x|
+|Ring=2|1.82x|
+|Ring=4|3.48x|
+|Ring=8|6.42x|

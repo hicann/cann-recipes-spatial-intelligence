@@ -9,10 +9,12 @@ import os
 import sys
 import os.path as osp
 import logging
+from dataclasses import dataclass
 
 from tqdm import tqdm
 
 import torch
+import torch.distributed as dist
 import torch_npu
 from torch_npu.contrib import transfer_to_npu
 from torch.utils.data._utils.collate import default_collate
@@ -32,6 +34,56 @@ from utils import transfer_data_between_devices, \
     denormalize_image, extract_pts3d, projection_alignment, get_pcd, write_pcd
     
 logging.basicConfig(level=logging.INFO)
+
+
+@dataclass
+class SPConfig:
+    """Sequence Parallel Configuration"""
+    ulysses_degree: int = 1
+    ring_degree: int = 1
+    use_ring_overlap: bool = True
+    
+    @property
+    def sp_degree(self):
+        return self.ulysses_degree * self.ring_degree
+
+
+def setup_distributed(args):
+    """Initialize distributed environment"""
+    if not dist.is_initialized():
+        dist.init_process_group(backend='hccl')
+    
+    rank = dist.get_rank()
+    world_size = dist.get_world_size()
+    
+    if args.ulysses_degree * args.ring_degree != world_size:
+        raise ValueError(
+            f"ulysses_degree ({args.ulysses_degree}) * ring_degree ({args.ring_degree}) "
+            f"must equal world_size ({world_size})"
+        )
+    
+    ulysses_pg = None
+    ring_pg = None
+    global_pg = None
+    
+    global_pg = dist.new_group(ranks=list(range(world_size)))
+    
+    if args.ulysses_degree > 1:
+        for i in range(args.ring_degree):
+            start_rank = i * args.ulysses_degree
+            ranks = list(range(start_rank, start_rank + args.ulysses_degree))
+            group = dist.new_group(ranks=ranks)
+            if rank in ranks:
+                ulysses_pg = group
+    
+    if args.ring_degree > 1:
+        for i in range(args.ulysses_degree):
+            ranks = list(range(i, world_size, args.ulysses_degree))
+            group = dist.new_group(ranks=ranks)
+            if rank in ranks:
+                ring_pg = group
+    
+    return rank, world_size, ulysses_pg, ring_pg, global_pg
 
 
 def model_inference(model, data, dtype, use_proj):
@@ -108,8 +160,8 @@ def main(model, dataset, device, args, dtype):
             write_pcd(pcd, pcd_gt, save_path, scene_id)
 
             acc, nc1, comp, nc2 = calc_performance(pcd, pcd_gt)
-            logging.info(f"Accuracy: {acc}, NC1: {nc1},  \
-                    Completeness: {comp}, NC2: {nc2}")
+            logging.info(f"Accuracy: {acc}, NC1: {nc1}, "
+                        f"Completeness: {comp}, NC2: {nc2}")
             
             acc_all += acc
             comp_all += comp
@@ -121,37 +173,92 @@ def main(model, dataset, device, args, dtype):
         acc_mean = acc_all / len(dataset)
         comp_mean = comp_all / len(dataset)
         overall_mean = (acc_mean + comp_mean) / 2
-        logging.info(f"Final Results--Accuracy:{acc_mean} | Completeness: {comp_mean} | Overall: {overall_mean} ")
+        logging.info(f"Final Results--Accuracy:{acc_mean} | "
+                    f"Completeness: {comp_mean} | Overall: {overall_mean}")
         
 
 if __name__ == "__main__":
     # Set random seeds
     fix_random_seed(42)
+    
     # Parse command-line arguments
     args = get_point_map_estimation_opts()
-    # Setup device and data type
-    device = "npu:0" if torch.cuda.is_available() else "cpu"
-    dtype = torch.bfloat16 
+    
+    # Add default values for SP parameters if not present
+    if not hasattr(args, 'use_sp'):
+        args.use_sp = False
+    if not hasattr(args, 'ulysses_degree'):
+        args.ulysses_degree = 1
+    if not hasattr(args, 'ring_degree'):
+        args.ring_degree = 1
+    
+    # Setup distributed environment if using sequence parallel
+    if args.use_sp:
+        rank, world_size, ulysses_pg, ring_pg, global_pg = setup_distributed(args)
+        device = f"npu:{rank}"
+        torch.npu.set_device(device)
+    else:
+        rank = 0
+        world_size = 1
+        ulysses_pg = None
+        ring_pg = None
+        global_pg = None
+        device = "npu:0" if torch.cuda.is_available() else "cpu"
+    
+    dtype = torch.bfloat16
 
     # Load model
-    checkpoint_path = args.ckpt    
-    if args.enableW8A8:
-        model = torch.load(checkpoint_path, map_location=device)
-        model.to(device).eval()
-    else:
-        model = VGGT()
-        checkpoint = torch.load(checkpoint_path)
+    checkpoint_path = args.ckpt
+    
+    if args.use_sp:
+        # Sequence parallel mode
+        sp_config = SPConfig(
+            ulysses_degree=args.ulysses_degree,
+            ring_degree=args.ring_degree,
+            use_ring_overlap=True,
+        )
+        
+        model = VGGT(
+            sp_config=sp_config,
+            sp_ulysses_group=ulysses_pg,
+            sp_ring_group=ring_pg,
+            sp_global_group=global_pg,
+        )
+        
+        checkpoint = torch.load(checkpoint_path, map_location='cpu')
         model.load_state_dict(checkpoint)
         model = model.to(dtype)
         model.to(device).eval()
         model = cast_model_weight(model)
+    else:
+        # Standard mode with optional quantization
+        if args.enableW8A8:
+            model = torch.load(checkpoint_path, map_location=device)
+            model.to(device).eval()
+        else:
+            model = VGGT()
+            checkpoint = torch.load(checkpoint_path)
+            model.load_state_dict(checkpoint)
+            model = model.to(dtype)
+            model.to(device).eval()
+            model = cast_model_weight(model)
+    
     # Load dataset
     resolution = (518, 392)
     test_dataset = ETH3D(
-            root_dir=args.dataset_dir,
-            resolution=resolution,
-            num_seq=1,
-        )
+        root_dir=args.dataset_dir,
+        resolution=resolution,
+        num_seq=1,
+    )
+    
     torch.npu.set_compile_mode(jit_compile=False)
+    
+    # Run evaluation
     main(model, test_dataset, device, args, dtype)
+    
+    # Synchronize if using distributed training
+    if args.use_sp:
+        dist.barrier()
+    
+    # Cleanup
     torch.cuda.empty_cache()

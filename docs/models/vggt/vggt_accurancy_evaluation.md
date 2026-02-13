@@ -73,6 +73,17 @@
    # use bf16 model
    cd eval/pose_evaluation
    python eval_co3d.py --co3d_dir $VGGT_DIR/datasets/co3d/co3d_data/ --co3d_anno_dir $VGGT_DIR/datasets/co3d/co3d_anno/  --ckpt $VGGT_DIR/ckpt/model.pt
+   
+   # use bf16_sp model
+   cd eval/pose_evaluation
+   torchrun --nproc_per_node=1 eval_co3d.py \
+    --ckpt $VGGT_DIR/ckpt/model.pt \
+    --co3d_dir $VGGT_DIR/datasets/co3d/co3d_data/ \
+    --co3d_anno_dir $VGGT_DIR/datasets/co3d/co3d_anno/ \
+    --use_sp \
+    --ulysses_degree 1 \
+    --ring_degree 1
+    
    # use int8 model
    cd eval/pose_evaluation
    python eval_co3d.py --co3d_dir $VGGT_DIR/datasets/co3d/co3d_data/ --co3d_anno_dir $VGGT_DIR/datasets/co3d/co3d_anno/  --ckpt ../../VGGT_model_W8A8.pt --enableW8A8
@@ -84,6 +95,16 @@
   cd eval/point_map_estimation
   # use bf16 model
   python eval_eth3d.py --ckpt $VGGT_DIR/ckpt/model.pt --dataset_dir $VGGT_DIR/datasets/multi_view_training_dslr_jpg
+  
+ # use bf16_sp model
+   cd eval/point_map_estimation
+   torchrun --nproc_per_node=1 eval_eth3d.py \
+    --ckpt $VGGT_DIR/ckpt/model.pt \
+	--dataset_dir $VGGT_DIR/datasets/multi_view_training_dslr_jpg
+    --use_sp \
+    --ulysses_degree 1 \
+    --ring_degree 1
+    
   # use int8 model
   python eval_eth3d.py --ckpt ../../VGGT_model_W8A8.pt --dataset_dir $VGGT_DIR/datasets/multi_view_training_dslr_jpg --enableW8A8
   ```
@@ -99,6 +120,15 @@
     # 深度图输出结果将保存在$VGGT_DIR/outputs文件夹下(in8模型)
     python eval_dtu.py --testlist dataset_utils/lists/test.txt --testpath $VGGT_DIR/datasets/dtu_testing/ --ckpt ../../VGGT_model_W8A8.pt --enableW8A8 #使用全量数据集
     # python eval_dtu.py --testlist dataset_utils/lists/sub_test.txt --testpath $VGGT_DIR/datasets/dtu_testing/ --ckpt ../../VGGT_model_W8A8.pt --enableW8A8 #使用部分数据集
+    # use sp model
+   cd eval/point_map_estimation
+   torchrun --nproc_per_node=1 eval_dtu.py \
+    --testlist dataset_utils/lists/test.txt 
+    --testpath $VGGT_DIR/datasets/dtu_testing/ 
+    --ckpt $VGGT_DIR/ckpt/model.pt
+    --use_sp \
+    --ulysses_degree 1 \
+    --ring_degree 1
    ```
 
 2. **深度图数值分布对齐**：由于VGGT模型基于归一化后的图像进行训练的，因此得到的深度图取值范围与真实深度图取值范围不接近，因此需要将生成的深度图与真值进行对齐。
@@ -127,11 +157,11 @@
   ||AUC@30|
   |:---:|:---:|
   |论文实验数据|88.2|
-  |NPU运行结果|85.3|
+  |NPU运行结果|91.1|
    |GPU运行结果|90.5|
   <!-- |NPU运行结果|91.3|85.3 -->
 ### 点云三维重建
-- 论文中采用**Accurancy (Acc)、Completeness（Comp）、Average Overall**三项指标衡量点云三维重建的精度结果。
+- 论文中采用**Accuracy (Acc)、Completeness（Comp）、Average Overall**三项指标衡量点云三维重建的精度结果。
   - **Acc**指的是预测点云中所有点到真值点云上最近邻的平均距离。
   - **Comp**指的是真值点云中所有点到预测点云上最近邻的平均距离。
   - **Overall**则是通过 (Acc+Comp)/2进行计算。
@@ -144,7 +174,7 @@
   |GPU实验数据|0.498|0.429|0.464|
   <!-- |NPU实验数据|0.485|0.443|0.464| -->
 ### 深度估计
-- 论文对该任务的精度评测是将场景下多视角的深度图进行融合，得到重建点云。通过比较重建点云与真实点云之间的距离衡量深度估计的精度结果。因此这里用到的依旧是**Accurancy (Acc)、Completeness（Comp）、Average Overall**三项指标。这三项指标的数值越低，说明重建精度越高。
+- 论文对该任务的精度评测是将场景下多视角的深度图进行融合，得到重建点云。通过比较重建点云与真实点云之间的距离衡量深度估计的精度结果。因此这里用到的依旧是**Accuracy (Acc)、Completeness（Comp）、Average Overall**三项指标。这三项指标的数值越低，说明重建精度越高。
 - 实验结果表明，本评测程序在GPU和NPU设备上输出的重建精度基本一致。
   
   ||Acc|Comp|Overall|

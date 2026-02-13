@@ -17,44 +17,32 @@
 #         https://github.com/meta-llama/codellama/blob/main/llama/model.py
 #         https://github.com/naver-ai/rope-vit
 
+from typing import Dict, Tuple, List, Optional, Union
+from dataclasses import dataclass
 
-from typing import Dict, Tuple, List
-
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch_npu
 
 
+@dataclass
+class FrequencyConfig:
+    """Configuration for frequency components computation."""
+    dim: int
+    seq_len: int
+    device: torch.device
+    dtype: torch.dtype
+    input_positions: Optional[torch.Tensor] = None
+    height: Optional[int] = None
+    width: Optional[int] = None
+
+
 class PositionGetter:
-    """Generates and caches 2D spatial positions for patches in a grid.
-
-    This class efficiently manages the generation of spatial coordinates for patches
-    in a 2D grid, caching results to avoid redundant computations.
-
-    Attributes:
-        position_cache: Dictionary storing precomputed position tensors for different
-            grid dimensions.
-    """
-
     def __init__(self):
-        """Initializes the position generator with an empty cache."""
         self.position_cache: Dict[Tuple[int, int], torch.Tensor] = {}
 
     def __call__(self, batch_size: int, height: int, width: int, device: torch.device) -> torch.Tensor:
-        """Generates spatial positions for a batch of patches.
-
-        Args:
-            batch_size: Number of samples in the batch.
-            height: Height of the grid in patches.
-            width: Width of the grid in patches.
-            device: Target device for the position tensor.
-
-        Returns:
-            Tensor of shape (batch_size, height*width, 2) containing y,x coordinates
-            for each position in the grid, repeated for each batch item.
-        """
         if (height, width) not in self.position_cache:
             y_coords = torch.arange(height, device=device)
             x_coords = torch.arange(width, device=device)
@@ -62,154 +50,199 @@ class PositionGetter:
             self.position_cache[height, width] = positions
 
         cached_positions = self.position_cache[height, width]
+        # 2: 2D coordinates (x, y)
         return cached_positions.view(1, height * width, 2).expand(batch_size, -1, -1).clone()
 
 
 class RotaryPositionEmbedding2D(nn.Module):
-    """2D Rotary Position Embedding implementation.
-
-    This module applies rotary position embeddings to input tokens based on their
-    2D spatial positions. It handles the position-dependent rotation of features
-    separately for vertical and horizontal dimensions.
-
-    Args:
-        frequency: Base frequency for the position embeddings. Default: 100.0
-        scaling_factor: Scaling factor for frequency computation. Default: 1.0
-
-    Attributes:
-        base_frequency: Base frequency for computing position embeddings.
-        scaling_factor: Factor to scale the computed frequencies.
-        frequency_cache: Cache for storing precomputed frequency components.
-    """
-
     def __init__(self, frequency: float = 100.0, scaling_factor: float = 1.0):
-        """Initializes the 2D RoPE module."""
         super().__init__()
         self.base_frequency = frequency
         self.scaling_factor = scaling_factor
         self.frequency_cache: Dict[Tuple, Tuple[torch.Tensor, torch.Tensor]] = {}
         self.cos_sin_cache: Dict[Tuple, Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]] = {}
-        self.max_position_cache: Dict[Tuple, int] = {}
 
     def _compute_frequency_components(
-        self, token_attribute: List, input_positions: torch.tensor, height: None, width: None
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Computes frequency components for rotary embeddings.
-
-        Args:
-            token_attribute: [dim: Feature dimension (must be even), 
-                device: Target device for computations, 
-                dtype: Data type for the computed tensors.]
-            input_positions: Position indices.
-            height: height of the image
-            width: height of the image
-        Returns:
-            Tuple of (cosine, sine) tensors for frequency components.
+        self, 
+        config: FrequencyConfig,
+    ) -> Union[Tuple[torch.Tensor, torch.Tensor], List[torch.Tensor]]:
         """
-        dim, device, dtype = token_attribute[0], token_attribute[1], token_attribute[2]
-        batch_size = input_positions.shape[0]
-        if height is None or width is None:
-            seq_len = int(input_positions.max()) + 1
-        else:
-            hw_key = (height, width)
-            if hw_key not in self.max_position_cache:
-                self.max_position_cache[hw_key] = int(input_positions.max()) + 1
-            seq_len = self.max_position_cache[hw_key]
-        cache_key = (dim, seq_len, device, dtype)
+        Unified frequency components computation for both legacy and modern paths.
+        
+        Legacy mode (config.input_positions=None):
+            Returns (cos_components, sin_components) for simple RoPE application
+            
+        Modern mode (config.input_positions provided):
+            Returns [vertical_cos, vertical_sin, horizontal_cos, horizontal_sin]
+            for 2D position encoding with optional sequence parallel support
+        
+        Args:
+            config: FrequencyConfig containing all computation parameters
+            
+        Returns:
+            Legacy mode: (cos, sin) tuple
+            Modern mode: [v_cos, v_sin, h_cos, h_sin] list
+        """
+        cache_key = (config.dim, config.seq_len, config.device, config.dtype)
+        
+        # Compute base frequency components (shared logic)
         if cache_key not in self.frequency_cache:
-            # Compute frequency bands
-            exponents = torch.arange(0, dim, 2, device=device).float() / dim
-            inv_freq = 1.0 / (self.base_frequency**exponents)
-            # Generate position-dependent frequencies
-            positions = torch.arange(seq_len, device=device, dtype=inv_freq.dtype)
+            # Compute inverse frequencies: freq_i = 1 / (base^(i/dim))
+            # 0, dim, 2: Generate even indices [0, 2, 4, ...] for frequency computation
+            exponents = torch.arange(0, config.dim, 2, device=config.device).float() / config.dim
+            inv_freq = 1.0 / (self.base_frequency ** exponents)
+            
+            # Generate position indices [0, 1, 2, ..., seq_len-1]
+            positions = torch.arange(config.seq_len, device=config.device, dtype=inv_freq.dtype)
+            
+            # Compute angles: angles[i,j] = position[i] * inv_freq[j]
             angles = torch.einsum("i,j->ij", positions, inv_freq)
-            # Compute and cache frequency components
-            angles = angles.to(dtype)
+            angles = angles.to(config.dtype)
+            
+            # dim=-1: Duplicate angles along last dimension for full feature dimension
             angles = torch.cat((angles, angles), dim=-1)
-            cos_components = angles.cos().to(dtype)
-            sin_components = angles.sin().to(dtype)
+            
+            # Compute cos and sin components
+            cos_components = angles.cos().to(config.dtype)
+            sin_components = angles.sin().to(config.dtype)
+            
             self.frequency_cache[cache_key] = (cos_components, sin_components)
+        
         cos_components, sin_components = self.frequency_cache[cache_key]
-        if height is None or width is None or batch_size is None:
-            vertical_cos = F.embedding(input_positions[..., 0], cos_components)[:, None, :, :]
-            vertical_sin = F.embedding(input_positions[..., 0], sin_components)[:, None, :, :]
-            horizontal_cos = F.embedding(input_positions[..., 1], cos_components)[:, None, :, :]
-            horizontal_sin = F.embedding(input_positions[..., 1], sin_components)[:, None, :, :]
-            cos_sin_output = [vertical_cos, vertical_sin, horizontal_cos, horizontal_sin]
-            return cos_sin_output
-        sub_cache_key = (height, width, batch_size)
-        if sub_cache_key not in self.cos_sin_cache:
-            # Embed positions with frequency components
-            vertical_cos = F.embedding(input_positions[..., 0], cos_components)[:, None, :, :]
-            vertical_sin = F.embedding(input_positions[..., 0], sin_components)[:, None, :, :]
-            horizontal_cos = F.embedding(input_positions[..., 1], cos_components)[:, None, :, :]
-            horizontal_sin = F.embedding(input_positions[..., 1], sin_components)[:, None, :, :]
-            self.cos_sin_cache[sub_cache_key] = (vertical_cos, vertical_sin, horizontal_cos, horizontal_sin)
-        vertical_cos, vertical_sin, horizontal_cos, horizontal_sin = self.cos_sin_cache[sub_cache_key]
-        cos_sin_output = [vertical_cos, vertical_sin, horizontal_cos, horizontal_sin]
-        return cos_sin_output
+        
+        # Legacy mode: return raw cos/sin components
+        if config.input_positions is None:
+            return cos_components, sin_components
+        
+        # Modern mode: apply to 2D positions
+        # 0: Extract batch size from first dimension
+        batch_size = config.input_positions.shape[0]
+        
+        if config.height is not None and config.width is not None and batch_size is not None:
+            sub_cache_key = (config.height, config.width, batch_size, config.seq_len)
+            
+            if sub_cache_key not in self.cos_sin_cache:
+                # ..., 0: Extract y-coordinate (vertical position)
+                # ..., 1: Extract x-coordinate (horizontal position)
+                # [:, None, :, :]: Add head dimension at index 1
+                vertical_cos = F.embedding(config.input_positions[..., 0], cos_components)[:, None, :, :]
+                vertical_sin = F.embedding(config.input_positions[..., 0], sin_components)[:, None, :, :]
+                horizontal_cos = F.embedding(config.input_positions[..., 1], cos_components)[:, None, :, :]
+                horizontal_sin = F.embedding(config.input_positions[..., 1], sin_components)[:, None, :, :]
+                self.cos_sin_cache[sub_cache_key] = (vertical_cos, vertical_sin, horizontal_cos, horizontal_sin)
+            
+            vertical_cos, vertical_sin, horizontal_cos, horizontal_sin = self.cos_sin_cache[sub_cache_key]
+        else:
+            # No caching for variable batch sizes
+            vertical_cos = F.embedding(config.input_positions[..., 0], cos_components)[:, None, :, :]
+            vertical_sin = F.embedding(config.input_positions[..., 0], sin_components)[:, None, :, :]
+            horizontal_cos = F.embedding(config.input_positions[..., 1], cos_components)[:, None, :, :]
+            horizontal_sin = F.embedding(config.input_positions[..., 1], sin_components)[:, None, :, :]
+        
+        return [vertical_cos, vertical_sin, horizontal_cos, horizontal_sin]
 
     @staticmethod
     def _rotate_features(x: torch.Tensor) -> torch.Tensor:
-        """Performs feature rotation by splitting and recombining feature dimensions.
-
-        Args:
-            x: Input tensor to rotate.
-
-        Returns:
-            Rotated feature tensor.
-        """
+        """Rotate features by 90 degrees (swap and negate)."""
         feature_dim = x.shape[-1]
+        # Split into two halves and rotate: [x1, x2] -> [-x2, x1]
         x1, x2 = x[..., : feature_dim // 2], x[..., feature_dim // 2 :]
         return torch.cat((-x2, x1), dim=-1)
 
     def _apply_1d_rope(
         self, tokens: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
     ) -> torch.Tensor:
-        """Applies 1D rotary position embeddings along one dimension.
-
-        Args:
-            tokens: Input token features.
-            cos: Cosine components for rotation.
-            sin: Sine components for rotation.
-
-        Returns:
-            Tokens with applied rotary position embeddings.
-        """
-        # Apply rotation
+        """Apply 1D rotary position embedding using NPU-optimized operation."""
+        # 'half': Apply rotation to half the features (RoPE2D splits features for x/y)
         return torch_npu.npu_rotary_mul(tokens, cos, sin, rotary_mode='half')
 
-    def forward(self, tokens: torch.Tensor, positions: torch.Tensor, height: int, width: int) -> torch.Tensor:
-        """Applies 2D rotary position embeddings to input tokens.
-
+    def forward(
+        self, 
+        tokens: torch.Tensor, 
+        positions: torch.Tensor, 
+        height: Optional[int] = None, 
+        width: Optional[int] = None,
+        global_seq_len: Optional[int] = None,
+    ) -> torch.Tensor:
+        """
+        Unified forward pass for 2D rotary position embeddings.
+        
+        Supports both legacy mode (height/width=None) and SP mode (height/width provided).
+        
         Args:
-            tokens: Input tensor of shape (batch_size, n_heads, n_tokens, dim).
-                   The feature dimension (dim) must be divisible by 4.
-            positions: Position tensor of shape (batch_size, n_tokens, 2) containing
-                      the y and x coordinates for each token.
-            height: height of the image
-            width: height of the image
-
+            tokens: [B, num_heads, N, head_dim] - Input tokens
+            positions: [B, N, 2] - 2D positions (x, y coordinates)
+            height: Image height (None for legacy mode)
+            width: Image width (None for legacy mode)
+            global_seq_len: Global sequence length (auto-calculated if None)
+        
         Returns:
             Tensor of same shape as input with applied 2D rotary position embeddings.
-
-        Raises:
-            AssertionError: If input dimensions are invalid or positions are malformed.
         """
-        # Validate inputs
+        # 2: Feature dimension must be even for RoPE (split into two halves)
         assert tokens.size(-1) % 2 == 0, "Feature dimension must be even"
+        # 3: Positions must be 3D [batch, tokens, coordinates]
+        # 2: Last dimension must be 2 for 2D coordinates (x, y)
         assert positions.ndim == 3 and positions.shape[-1] == 2, "Positions must have shape (batch_size, n_tokens, 2)"
-        # Compute feature dimension for each spatial direction
+
+        # //2: Split feature dimension in half for vertical/horizontal encoding
         feature_dim = tokens.size(-1) // 2
-        token_attribute = [feature_dim, tokens.device, tokens.dtype]
-        # Get frequency components
-        cos_sin_output = self._compute_frequency_components(token_attribute, positions, height, width)
-        vertical_cos, vertical_sin, horizontal_cos, horizontal_sin \
-            = cos_sin_output[0], cos_sin_output[1], cos_sin_output[2], cos_sin_output[3]
-        # Split features for vertical and horizontal processing
+        
+        # Legacy mode: height and width not provided
+        if height is None and width is None:
+            # +1: Convert max position (0-indexed) to sequence length
+            max_position = int(positions.max()) + 1
+            
+            # Get base frequency components (legacy mode)
+            config = FrequencyConfig(
+                dim=feature_dim,
+                seq_len=max_position,
+                device=tokens.device,
+                dtype=tokens.dtype,
+                input_positions=None
+            )
+            cos_comp, sin_comp = self._compute_frequency_components(config)
+            
+            # 2: Split features into two halves for vertical and horizontal
+            vertical_features, horizontal_features = tokens.chunk(2, dim=-1)
+
+            # ..., 0: Extract y-coordinate for vertical encoding
+            # ..., 1: Extract x-coordinate for horizontal encoding
+            # [:, None, :, :]: Add head dimension for broadcasting
+            vertical_cos = F.embedding(positions[..., 0], cos_comp)[:, None, :, :]
+            vertical_sin = F.embedding(positions[..., 0], sin_comp)[:, None, :, :]
+            horizontal_cos = F.embedding(positions[..., 1], cos_comp)[:, None, :, :]
+            horizontal_sin = F.embedding(positions[..., 1], sin_comp)[:, None, :, :]
+
+            # Apply rotary embeddings to each half
+            vertical_features = self._apply_1d_rope(vertical_features, vertical_cos, vertical_sin)
+            horizontal_features = self._apply_1d_rope(horizontal_features, horizontal_cos, horizontal_sin)
+
+            # dim=-1: Concatenate along feature dimension
+            return torch.cat((vertical_features, horizontal_features), dim=-1)
+        
+        # Modern mode with sequence parallel support
+        # Auto-calculate global sequence length if not provided
+        if global_seq_len is None:
+            global_seq_len = height * width
+        
+        # Get frequency components with 2D position application (modern mode)
+        config = FrequencyConfig(
+            dim=feature_dim,
+            seq_len=global_seq_len,
+            device=tokens.device,
+            dtype=tokens.dtype,
+            input_positions=positions,
+            height=height,
+            width=width
+        )
+        cos_sin_output = self._compute_frequency_components(config)
+        vertical_cos, vertical_sin, horizontal_cos, horizontal_sin = cos_sin_output
+        
+        # Split and apply rotary embeddings
         vertical_features, horizontal_features = tokens.chunk(2, dim=-1)
-        # Apply RoPE separately for each dimension
+        
         vertical_features = self._apply_1d_rope(vertical_features, vertical_cos, vertical_sin)
         horizontal_features = self._apply_1d_rope(horizontal_features, horizontal_cos, horizontal_sin)
-        # Combine processed features
+        
         return torch.cat((vertical_features, horizontal_features), dim=-1)

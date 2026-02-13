@@ -11,22 +11,23 @@
 #   https://github.com/facebookresearch/dino/blob/master/vision_transformer.py
 #   https://github.com/rwightman/pytorch-image-models/tree/master/timm/layers/patch_embed.py
 
+
 import logging
-import os
 from typing import Callable, List, Any, Tuple, Dict, Optional
-import warnings
 
 import torch
 from torch import nn, Tensor
 import torch_npu
+import torch.distributed as dist
 
-from .attention import Attention
+from .attention import Attention, AttentionForwardParams, MemEffAttention
 from .drop_path import DropPath
 from .layer_scale import LayerScale
 from .mlp import Mlp
 
 
 XFORMERS_AVAILABLE = False
+
 
 def vggt_layernorm_forward(self, x: torch.Tensor, residual: Optional[torch.Tensor] = None):
     if residual is None:
@@ -57,8 +58,13 @@ class Block(nn.Module):
         attn_class: Callable[..., nn.Module] = Attention,
         ffn_layer: Callable[..., nn.Module] = Mlp,
         qk_norm: bool = False,
-        fused_attn: bool = True,  # use F.scaled_dot_product_attention or not
+        fused_attn: bool = True,
         rope=None,
+        # Sequence Parallel parameters
+        is_global_attention: bool = False,
+        sp_config: Optional['SPConfig'] = None,
+        sp_ulysses_group: Optional[dist.ProcessGroup] = None,
+        sp_ring_group: Optional[dist.ProcessGroup] = None,
     ) -> None:
         super().__init__()
 
@@ -74,6 +80,10 @@ class Block(nn.Module):
             qk_norm=qk_norm,
             fused_attn=fused_attn,
             rope=rope,
+            is_global_attention=is_global_attention,
+            sp_config=sp_config,
+            sp_ulysses_group=sp_ulysses_group,
+            sp_ring_group=sp_ring_group,
         )
 
         self.ls1 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
@@ -89,16 +99,35 @@ class Block(nn.Module):
 
         self.sample_drop_ratio = drop_path
 
-    def forward(self, x: Tensor, pos=None, height=None, width=None) -> Tensor:
-        def attn_residual_func(x: Tensor, pos=None, height=None, width=None) -> Tuple[Tensor, Tensor]:
-            return self.ls1(self.attn(self.norm1(x), pos=pos, height=height, width=width)), x
+    def forward(self, x, pos=None, height=None, width=None, global_seq_len=None):
+        """
+        Unified forward pass for the transformer block.
+        
+        Args:
+            x: Input tensor [B, N, C]
+            pos: Position encodings [B, N, 2]
+            height: Image height (for RoPE)
+            width: Image width (for RoPE)
+            global_seq_len: Global sequence length (for SP mode)
+        
+        Returns:
+            Output tensor [B, N, C]
+        """
+        def attn_residual_func(x: Tensor, pos=None) -> Tensor:
+            norm_out = self.norm1(x)
+            params = AttentionForwardParams(
+                x=norm_out,
+                pos=pos,
+                height=height,
+                width=width,
+                global_seq_len=global_seq_len
+            )
+            return self.ls1(self.attn(params))
 
-        def ffn_residual_func(x: Tensor, past_residual=None) -> Tuple[Tensor, Tensor]:
-            norm_res, residual = self.norm2(x, past_residual)
-            return self.ls2(self.mlp(norm_res)), residual
+        def ffn_residual_func(x: Tensor) -> Tensor:
+            return self.ls2(self.mlp(self.norm2(x)))
 
         if self.training and self.sample_drop_ratio > 0.1:
-            # the overhead is compensated only for a drop path rate larger than 0.1
             x = drop_add_residual_stochastic_depth(
                 x, pos=pos, residual_func=attn_residual_func, sample_drop_ratio=self.sample_drop_ratio
             )
@@ -107,26 +136,23 @@ class Block(nn.Module):
             )
         elif self.training and self.sample_drop_ratio > 0.0:
             x = x + self.drop_path1(attn_residual_func(x, pos=pos))
-            x = x + self.drop_path1(ffn_residual_func(x))  # FIXME: drop_path2
+            x = x + self.drop_path2(ffn_residual_func(x))
         else:
-            x, past_x = attn_residual_func(x, pos=pos, height=height, width=width)
-            x_new, x = ffn_residual_func(x, past_x)
-            x = x_new + x
+            x = x + attn_residual_func(x, pos=pos)
+            x = x + ffn_residual_func(x)
+        
         return x
 
 
 def drop_add_residual_stochastic_depth(
     x: Tensor, residual_func: Callable[[Tensor], Tensor], sample_drop_ratio: float = 0.0, pos=None
 ) -> Tensor:
-    # 1) extract subset using permutation
     b, n, d = x.shape
     sample_subset_size = max(int(b * (1 - sample_drop_ratio)), 1)
     brange = (torch.randperm(b, device=x.device))[:sample_subset_size]
     x_subset = x[brange]
 
-    # 2) apply residual_func to get residual
     if pos is not None:
-        # if necessary, apply rope to the subset
         pos = pos[brange]
         residual = residual_func(x_subset, pos=pos)
     else:
@@ -137,7 +163,6 @@ def drop_add_residual_stochastic_depth(
 
     residual_scale_factor = b / sample_subset_size
 
-    # 3) add the residual
     x_plus_residual = torch.index_add(x_flat, 0, brange, residual.to(dtype=x.dtype), alpha=residual_scale_factor)
     return x_plus_residual.view_as(x)
 
@@ -167,7 +192,7 @@ attn_bias_cache: Dict[Tuple, Any] = {}
 
 def get_attn_bias_and_cat(x_list, branges=None):
     """
-    this will perform the index select, cat the tensors, and provide the attn_bias from cache
+    Index select, concatenate tensors, and provide attention bias from cache.
     """
     batch_sizes = [b.shape[0] for b in branges] if branges is not None else [x.shape[0] for x in x_list]
     all_shapes = tuple((b, x.shape[1]) for b, x in zip(batch_sizes, x_list))
@@ -195,16 +220,13 @@ def drop_add_residual_stochastic_depth_list(
     sample_drop_ratio: float = 0.0,
     scaling_vector=None,
 ) -> Tensor:
-    # 1) generate random set of indices for dropping samples in the batch
     branges_scales = [get_branges_scales(x, sample_drop_ratio=sample_drop_ratio) for x in x_list]
     branges = [s[0] for s in branges_scales]
     residual_scale_factors = [s[1] for s in branges_scales]
 
-    # 2) get attention bias and index+concat the tensors
     attn_bias, x_cat = get_attn_bias_and_cat(x_list, branges)
 
-    # 3) apply residual_func to get residual, and split the result
-    residual_list = attn_bias.split(residual_func(x_cat, attn_bias=attn_bias))  # type: ignore
+    residual_list = attn_bias.split(residual_func(x_cat, attn_bias=attn_bias))
 
     outputs = []
     for x, brange, residual, residual_scale_factor in zip(x_list, branges, residual_list, residual_scale_factors):
@@ -214,15 +236,18 @@ def drop_add_residual_stochastic_depth_list(
 
 class NestedTensorBlock(Block):
     def forward_nested(self, x_list: List[Tensor]) -> List[Tensor]:
-        """
-        x_list contains a list of tensors to nest together and run
-        """
+        """Process nested tensor list."""
         assert isinstance(self.attn, MemEffAttention)
 
         if self.training and self.sample_drop_ratio > 0.0:
 
             def attn_residual_func(x: Tensor, attn_bias=None) -> Tensor:
-                return self.attn(self.norm1(x), attn_bias=attn_bias)
+                params = AttentionForwardParams(
+                    x=self.norm1(x),
+                    pos=None,
+                    attn_bias=attn_bias
+                )
+                return self.attn(params)
 
             def ffn_residual_func(x: Tensor, attn_bias=None) -> Tensor:
                 return self.mlp(self.norm2(x))
@@ -243,7 +268,12 @@ class NestedTensorBlock(Block):
         else:
 
             def attn_residual_func(x: Tensor, attn_bias=None) -> Tensor:
-                return self.ls1(self.attn(self.norm1(x), attn_bias=attn_bias))
+                params = AttentionForwardParams(
+                    x=self.norm1(x),
+                    pos=None,
+                    attn_bias=attn_bias
+                )
+                return self.ls1(self.attn(params))
 
             def ffn_residual_func(x: Tensor, attn_bias=None) -> Tensor:
                 return self.ls2(self.mlp(self.norm2(x)))
@@ -253,22 +283,12 @@ class NestedTensorBlock(Block):
             x = x + ffn_residual_func(x)
             return attn_bias.split(x)
 
-    def forward(self, x_or_x_list):
+    def forward(self, x_or_x_list, pos=None, height=None, width=None, global_seq_len=None):
         if isinstance(x_or_x_list, Tensor):
-            return super().forward(x_or_x_list)
+            return super().forward(x_or_x_list, pos=pos, height=height, width=width, global_seq_len=global_seq_len)
         elif isinstance(x_or_x_list, list):
             if not XFORMERS_AVAILABLE:
                 raise AssertionError("xFormers is required for using nested tensors")
             return self.forward_nested(x_or_x_list)
         else:
-            raise AssertionError
-
-    def _forward(self, x_or_x_list):
-        if isinstance(x_or_x_list, Tensor):
-            return super()._forward(x_or_x_list)
-        elif isinstance(x_or_x_list, list):
-            if not XFORMERS_AVAILABLE:
-                raise AssertionError("xFormers is required for using nested tensors")
-            return self.forward_nested(x_or_x_list)
-        else:
-            raise AssertionError
+            raise AssertionError(f"Unexpected input type: {type(x_or_x_list)}")

@@ -1,17 +1,17 @@
 # VGGT inference on Ascend Atlas A2
 ## CANN Environment Preparaton
-1. The inference of VGGT depends on the CANN development kit package (`cann-toolkit`) and the CANN binaray operator package(`cann-kernels`). The supported CANN software version is CANN 8.0.RC3.beta1.
+1. The inference of VGGT depends on the CANN development kit package (`cann-toolkit`) and the CANN binaray operator package(`cann-kernels`). The supported CANN software version is CANN 8.5.0.
    
-    Download the `Ascend-cann-toolkit_${version}_linux-${arch}.run` and `Ascend-cann-kernels-${chip_type}_${version}_linux-${arch}.run` packages from the [CANN Software Package Download Page](https://www.hiascend.com/developer/download/community/result?module=cann&cann=8.0.RC3.beta1) and install them by referring to the [CANN Installation Guide](https://www.hiascend.com/document/detail/zh/canncommercial/80RC3/softwareinst/instg/instg_0007.html?Mode=PmIns&OS=Ubuntu&Software=cannToolKit).
+    Download the `Ascend-cann-toolkit_${version}_linux-${arch}.run` and `Ascend-cann-${chip_type}-ops_linux-${arch}.run` packages from the [CANN Software Package Download Page](https://www.hiascend.com/developer/download/community/result?module=cann&cann=8.5.0) and install them by referring to the [CANN Installation Guide](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/850/quickstart/instg_quick.html).
 
-2. The required versions of torch and torch_npu are 2.1.0 and 2.1.0.post12.
+2. The required versions of torch and torch_npu are 2.7.1 and 2.7.1.post2.
 
-    Download the binary package from [Ascend Extension for PyTorch](https://www.hiascend.com/document/detail/zh/Pytorch/700/configandinstg/instg/insg_0004.html) and install torch and torch_npu.
+    Download the binary package from [Ascend Extension for PyTorch](https://www.hiascend.com/document/detail/zh/Pytorch/730/configandinstg/instg/docs/zh/installation_guide/installation_via_binary_package.md) and install torch and torch_npu.
     ```shell
     conda create -n vggt python==3.11.13
     conda activate vggt
-    pip3 install torch==2.1.0
-    pip3 install torch-npu==2.1.0.post12
+    pip3 install torch==2.7.1
+    pip3 install torch-npu==2.7.1.post2
     ```
 
 ## VGGT Model Preparation
@@ -50,6 +50,7 @@
             +--- layers
             +--- models
             +--- utils
+            +--- sp
     ```
 ## Performance Measurement
 This repo provides script to test the functionality and the performance of VGGT model on NPU.
@@ -61,7 +62,28 @@ This repo provides script to test the functionality and the performance of VGGT 
    ```shell
     python demo_infer.py --ckpt "ckpt/model.pt"
    ```
-3. To perform vggt int8 model inference, you first need to build the vggt int8 model:
+  
+3. Run the inference script and the output presents the average inference time of vggt bf16_sp model.
+   ```shell
+    bash infer_test.sh
+   ```
+   Parameter description for multi NPU inference:
+   ```
+    torchrun --nproc_per_node=1 demo_infer.py \
+      --ckpt ${model_base} \
+      --images_path examples/kitchen/images \
+      --enable_sp \
+      --ulysses_degree 1 \
+      --ring_degree 1
+      
+   # nproc_per_node：The torchrun parameter, the number of processes started by each node, needs to be equal to the number of NPU cards used；
+   # ckpt：Model checkpoint file path；
+   # images_path：Enter the directory where the image sequence is located；
+   # enable_sp：Whether to enable sequence parallelism, default value: False, with the prerequisite that nproc_per_node>1；
+   # ulysses_degree：Ulysses parallelism, constraint Ulysses_degree × ring_degree=nproc_per_node; Num_ attention heads must be divisible by Ulysses_degree；
+   # ring_degree：Ring parallelism, constraint Ulysses_degree × ring_degree=nproc_per_node
+
+4. To perform vggt int8 model inference, you first need to build the vggt int8 model:
    ```shell
     python demo_infer.py --ckpt "ckpt/model.pt" --buildW8A8
    ```

@@ -6,16 +6,16 @@
 ---
 ## 执行样例
 ### CANN环境准备
-1. 本样例的执行依赖CANN开发套件包（cann-toolkit）与CANN二进制算子包（cann-kernels），目前使用CANN软件版本为`CANN.8.0.RC3.beta1`。
-请从[CANN软件包下载地址](https://www.hiascend.com/developer/download/community/result?module=cann&cann=8.0.RC3.beta1)下载`Ascend-cann-toolkit_${version}_linux-${arch}.run`与`Ascend-cann-kernels-${chip_type}_${version}_linux-${arch}.run`软件包，并参考[CANN安装文档](https://www.hiascend.com/document/detail/zh/canncommercial/80RC3/softwareinst/instg/instg_0007.html?Mode=PmIns&OS=Ubuntu&Software=cannToolKit)进行安装。
+1. 本样例的执行依赖CANN开发套件包（cann-toolkit）与CANN二进制算子包（cann-kernels），目前使用CANN软件版本为`CANN.8.5.0`。
+请从[CANN软件包下载地址](https://www.hiascend.com/developer/download/community/result?module=cann&cann=8.5.0)下载`Ascend-cann-toolkit_${version}_linux-${arch}.run`与`Ascend-cann-${chip_type}-ops_linux-${arch}.run`软件包，并参考[CANN安装文档](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/850/quickstart/instg_quick.html)进行安装。
 
-2. 本样例依赖的torch以及torch_npu版本为2.1.0。
-请从[Ascend Extension for PyTorch插件](https://www.hiascend.com/document/detail/zh/Pytorch/700/configandinstg/instg/insg_0004.html)下载torch与torch_npu安装包，本样例依赖的torch与torch_npu版本分别为2.1.0和2.1.0.post12。
+2. 本样例依赖的torch以及torch_npu版本为2.7.1。
+请从[Ascend Extension for PyTorch插件](https://www.hiascend.com/document/detail/zh/Pytorch/730/configandinstg/instg/docs/zh/installation_guide/installation_via_binary_package.md)下载torch与torch_npu安装包，本样例依赖的torch与torch_npu版本分别为2.7.1和2.7.1.post2。
     ```shell
     conda create -n vggt python==3.11.13
     conda activate vggt
-    pip3 install torch==2.1.0
-    pip3 install torch_npu==2.1.0.post12
+    pip3 install torch==2.7.1
+    pip3 install torch_npu==2.7.1.post2
     ```
 ### 网络模型代码准备
 - 本仓库依赖[VGGT](https://github.com/facebookresearch/vggt/tree/main)的开源仓库代码。
@@ -57,18 +57,38 @@
           +--- layers
           +--- models
           +--- utils
+          +--- sp
   ```
 
 ### 快速启动
-本样例准备了单卡环境下的推理样例脚本。
-执行脚本前，请参考[Ascend社区](https://www.hiascend.com/document/detail/zh/canncommercial/80RC3/softwareinst/instg/instg_0007.html?Mode=PmIns&OS=Ubuntu&Software=cannToolKit)中的CANN安装软件教程，配置环境变量：
+本样例准备了单卡和多卡环境下的推理样例脚本。
+执行脚本前，请参考[Ascend社区](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/850/quickstart/instg_quick.html)中的CANN安装软件教程，配置环境变量：
 ```shell
 source /usr/local/Ascend/ascend-toolkit/set_env.sh 
 ```
-推理bf16模型脚本运行：
+推理bf16模型脚本单卡运行：
 ```python
 python demo_infer.py --ckpt "ckpt/model.pt"
 ```
+推理bf16模型脚本多卡运行：
+```python
+bash infer_test.sh
+```
+多卡推理的参数说明：
+```python
+torchrun --nproc_per_node=1 demo_infer.py \
+    --ckpt ${model_base} \
+    --images_path examples/kitchen/images \
+    --enable_sp \
+    --ulysses_degree 1 \
+    --ring_degree 1
+```
+- `--nproc_per_node：torchrun参数，每个节点启动的进程数，需要等于使用的NPU卡数`
+- `--ckpt：模型checkpoint文件路径`
+- `--images_path：输入图像序列所在目录`
+- `--enable_sp:是否启用序列并行,默认值: False,前提条件为nproc_per_node > 1`
+- `--ulysses_degree：Ulysses并行度,约束ulysses_degree × ring_degree = nproc_per_node；num_attention_heads 必须能被 ulysses_degree 整除`
+- `--ring_degree：Ring并行度,约束ulysses_degree × ring_degree = nproc_per_node`
 
 推理int8模型，需要先生成int8模型(当前实现中，只将VGGT模型中K=4096的Linear层进行了8bit量化)：
 ```python
