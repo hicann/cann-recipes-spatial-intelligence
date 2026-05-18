@@ -46,13 +46,13 @@ class SSIM:
 
     @staticmethod
     def create_window(window_size, channel):
-        _1D_window = SSIM.gaussian(window_size, 1.5).unsqueeze(1)
+        _1D_window = SSIM.gaussian(window_size, 1.5 / 2).unsqueeze(1)
         _2D_window = _1D_window.mm(_1D_window.t()).float().unsqueeze(0).unsqueeze(0)
         window = Variable(_2D_window.expand(channel, 1, window_size, window_size).contiguous())
         return window
 
     @staticmethod
-    def ssim(img1, img2, window_size=11, size_average=True):
+    def ssim(img1, img2, window_size=7, size_average=True):
         channel = img1.size(-3)
         if SSIM.window_cache is not None:
             window = SSIM.window_cache
@@ -65,15 +65,16 @@ class SSIM:
 
     @staticmethod
     def _ssim(img1, img2, window, window_size, channel, size_average=True):
-        mu1 = F.conv2d(img1, window, padding=window_size // 2, groups=channel)
-        mu2 = F.conv2d(img2, window, padding=window_size // 2, groups=channel)
+        padding = window_size // 2
+        mu1 = F.conv2d(img1, window, padding=padding, groups=channel)
+        mu2 = F.conv2d(img2, window, padding=padding, groups=channel)
         
         mu1_sq = mu1.pow(2)
         mu2_sq = mu2.pow(2)
         mu1_mu2 = mu1 * mu2
-        sigma1_sq = F.conv2d(img1 * img1, window, padding=window_size // 2, groups=channel) - mu1_sq
-        sigma2_sq = F.conv2d(img2 * img2, window, padding=window_size // 2, groups=channel) - mu2_sq
-        sigma12 = F.conv2d(img1 * img2, window, padding=window_size // 2, groups=channel) - mu1_mu2
+        sigma1_sq = F.conv2d(img1 * img1, window, padding=padding, groups=channel) - mu1_sq
+        sigma2_sq = F.conv2d(img2 * img2, window, padding=padding, groups=channel) - mu2_sq
+        sigma12 = F.conv2d(img1 * img2, window, padding=padding, groups=channel) - mu1_mu2
 
         C1 = 0.01 ** 2
         C2 = 0.03 ** 2

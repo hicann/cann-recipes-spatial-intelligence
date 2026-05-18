@@ -14,18 +14,18 @@ import acl
 from rasterization.utils import validate_inputs
 from rasterization.config import Config
 from meta_gauss_render import (
-    spherical_harmonics, 
-    projection_three_dims_gaussian_fused, 
-    flash_gaussian_build_mask, 
-    gaussian_sort, 
-    calc_render, 
-    get_render_schedule_cpp
+    spherical_harmonics,
+    projection_three_dims_gaussian_fused,
+    flash_gaussian_build_mask,
+    gaussian_sort,
+    calc_render,
+    get_render_schedule,
 )
 
 
 class Rasterizer:
     def __init__(self, cfg: Config) -> None:
-        self.cfg = cfg  
+        self.cfg = cfg
         self.tile_size = 32
         self.pix_coord = None
         self.padded_width = None
@@ -41,7 +41,7 @@ class Rasterizer:
         rendered_image = rendered_image.reshape(nh, nw, ts, ts, -1).transpose(1, 2).reshape(nh * ts, nw * ts, -1)
         return rendered_image.permute(2, 0, 1)[:, :height, :width]
 
-    def get_render_input(self, gs, depths, tile_offsets, _cam_view):
+    def get_render_input(self, gs, depths, _cam_view):
         means2d, colors, opacities, conics = gs
         cf_means2 = means2d[0, _cam_view]
         cf_colors3 = colors[0, _cam_view]
@@ -58,16 +58,9 @@ class Rasterizer:
         pix_coords = self.pix_coord.reshape(height // ts, ts, width // ts, ts, 2) \
             .permute(0, 2, 1, 3, 4).reshape(height // ts * width // ts, ts * ts, 2) \
             .permute(0, 2, 1).to(torch.float32).contiguous()
-        # nums: 每个tile对应的gs数量
-        nums = torch.cat([tile_offsets[_cam_view][:1], tile_offsets[_cam_view][1:] - tile_offsets[_cam_view][:-1]]) 
-        # lb_sched：cat[每个vector core要处理的tile数目的cumsum，依次对应的tile id，依次对应的tile offset]
-        lb_sched = get_render_schedule_cpp(nums.cpu().to(torch.int64), 
-            acl.get_device_capability(0, 1)[0]).clone().detach().to(torch.int64).npu()
-
         cf_gs = cf_means2, cf_colors3, cf_opacity, inv_x_0, inv_x_1, inv_x_2, cf_depths 
-        return (cf_gs, pix_coords, lb_sched)
-        
-    
+        return (cf_gs, pix_coords)
+
     def ascend_rasterize_splats(
         self,
         cam: Tuple,
@@ -125,14 +118,14 @@ class Rasterizer:
         width, height = size
 
         # Colors are SH coefficients, with shape [N, K, 3] or [C, N, K, 3]
-        camtoworlds = torch.inverse(viewmats) # [C, 4, 4]
+        camtoworlds = torch.inverse(viewmats)  # [C, 4, 4]
         if colors.dim() == 3:
             # Turn [N, K, 3] into [C, N, K, 3]
             shs = colors.expand(C, -1, -1, -1)
         else:
             # colors is already [C, N, K, 3]
             shs = colors
-        
+
         # build colors
         rays_o = camtoworlds[0, :3, 3]
         rays_d = means - rays_o
@@ -140,7 +133,7 @@ class Rasterizer:
         k = (sh_degree + 1) ** 2
         colors = spherical_harmonics(sh_degree, rays_d.reshape(B, N, 3), shs[0, :, :k, :].reshape(B, N, k, 3))  
         colors = (colors + 0.5).clip(min=0.0)
-        
+
         # ascend gauss projection
         means2d, depths, conics, opacities, radius, covars2d, colors, cnt = projection_three_dims_gaussian_fused(
             means.reshape(B, N, 3),
@@ -160,37 +153,82 @@ class Rasterizer:
 
         # ascend gauss sort
         with torch.no_grad():
-            mask = flash_gaussian_build_mask(means2d, opacities[None, :], conics, covars2d, 
-                                            cnt[None, :], self.tile_grid.float(), width, height, tile_size)
-            sorted_gs_ids = []
-            tile_offsets = []
-            for _cam_view in range(0, C):
-                cf_sorted_gs_ids, cf_tile_offsets = gaussian_sort(mask[0, _cam_view], depths[0, _cam_view])
-                sorted_gs_ids.append(cf_sorted_gs_ids)
-                tile_offsets.append(cf_tile_offsets)
-        
+            tile_sums, tile_offsets, tile_depths, tile_gauss_ids = (
+                flash_gaussian_build_mask(
+                    means2d,
+                    opacities[None, :],
+                    conics,
+                    covars2d,
+                    depths,
+                    cnt[None, :],
+                    self.tile_grid.float(),
+                    width,
+                    height,
+                    tile_size,
+                )
+            )
+            sorted_cnts = tile_offsets.squeeze(-1)[:, :, -1]  # [B, C]
+            sorted_cnts_flatten = sorted_cnts.flatten()
+            sorted_offset = torch.cumsum(sorted_cnts_flatten, dim=0)
+            tile_sums_3d = tile_sums.squeeze(-1)  # [B, C, T]
+            tile_sums_cpu = tile_sums_3d.cpu().to(torch.int64)
+
+            vector_num = acl.get_device_capability(0, 1)[0]
+            lb_sched_tensor_cpu = get_render_schedule(tile_sums_cpu, vector_num)
+            lb_sched_tensor = lb_sched_tensor_cpu.npu()
+            max_tile_gauss = torch.amax(tile_sums).item()
+
+            sorted_gs_ids = gaussian_sort(
+                lb_sched_tensor,
+                tile_sums,
+                tile_depths,
+                tile_gauss_ids,
+                sorted_offset,
+                max_tile_gauss,
+            )
+
         render_colors = []
         render_depths = []
-        for _cam_view in range(0, C):
-            gs = means2d, colors, opacities, conics
-            cf_gs, pix_coords, lb_sched = self.get_render_input(gs, depths, tile_offsets, _cam_view)
-            cf_means2, cf_colors3, cf_opacity, inv_x_0, inv_x_1, inv_x_2, cf_depths = cf_gs
-            
-            # ascend rasterize to pixels
-            cf_render_colors, cf_render_depths = calc_render(cf_means2,
-                                                            inv_x_0, inv_x_1, inv_x_2,
-                                                            cf_opacity,
-                                                            cf_colors3,
-                                                            cf_depths,
-                                                            pix_coords,
-                                                            lb_sched,
-                                                            sorted_gs_ids[_cam_view]
-                                                            )
-            cf_render_colors = self.tile2image(cf_render_colors.permute(1, 2, 0), height, width)
-            cf_render_depths = self.tile2image(cf_render_depths.permute(1, 2, 0), height, width)
+        for _batch_id in range(0, B):
+            for _cam_view in range(0, C):
+                gs = means2d, colors, opacities, conics
+                cf_gs, pix_coords = self.get_render_input(gs, depths, _cam_view)
+                (
+                    cf_means2,
+                    cf_colors3,
+                    cf_opacity,
+                    inv_x_0,
+                    inv_x_1,
+                    inv_x_2,
+                    cf_depths,
+                ) = cf_gs
+                view_idx = _batch_id * C + _cam_view
+                start_index = sorted_offset[view_idx - 1] if view_idx > 0 else 0
+                end_index = sorted_offset[view_idx]
+                sorted_gs_id = sorted_gs_ids[start_index:end_index]
+                lb_sched = lb_sched_tensor[_batch_id, _cam_view, :]
+                # ascend rasterize to pixels
+                cf_render_colors, cf_render_depths = calc_render(
+                    cf_means2,
+                    inv_x_0,
+                    inv_x_1,
+                    inv_x_2,
+                    cf_opacity,
+                    cf_colors3,
+                    cf_depths,
+                    pix_coords,
+                    lb_sched,
+                    sorted_gs_id,
+                )
+                cf_render_colors = self.tile2image(
+                    cf_render_colors.permute(1, 2, 0), height, width
+                )
+                cf_render_depths = self.tile2image(
+                    cf_render_depths.permute(1, 2, 0), height, width
+                )
 
-            render_colors.append(cf_render_colors.permute(1, 2, 0))
-            render_depths.append(cf_render_depths.permute(1, 2, 0))
+                render_colors.append(cf_render_colors.permute(1, 2, 0))
+                render_depths.append(cf_render_depths.permute(1, 2, 0))
         render_colors = torch.stack(render_colors)
         render_depths = torch.stack(render_depths)
 

@@ -28,8 +28,11 @@ def gaussian_build_mask(
 ) -> torch.Tensor:...
 
 def gaussian_sort(
-    all_in_mask,
-    depths
+    lb_sched,
+    depths,
+    gs_ids,
+    sorted_offset,
+    max_tile_gauss
 ) -> torch.Tensor:...
 
 def calc_render(
@@ -51,18 +54,19 @@ def spherical_harmonics(
     coeffs
 ) -> torch.Tensor:...
 
-def get_render_schedule_cpp(nums, num_bins) -> torch.Tensor:...
+def get_render_schedule(nums_tensor: torch.Tensor, num_bins: int) -> torch.Tensor: ...
 
 def flash_gaussian_build_mask(
             means2d,
             opacity,
             conics,
             covars2d,
+            depths,
             cnt,
             tile_grid,
             image_width,
             image_height,
-            tile_size
+            tile_size=64
 ) -> torch.Tensor:...
 
 def gaussian_filter(
@@ -85,9 +89,8 @@ def gaussian_filter(
 __all__ = [
     "projection_three_dims_gaussian_fused",
     "calc_render",
-    "build_tile_gs_mask",
     "gaussian_sort",
-    "get_render_schedule_cpp",
+    "get_render_schedule",
     "spherical_harmonics",
     "flash_gaussian_build_mask",
     "gaussian_filter"

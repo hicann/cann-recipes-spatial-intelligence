@@ -9,5 +9,5 @@
 import meta_gauss_render._C
 
 
-def get_render_schedule_cpp(nums, num_bins):
-    return meta_gauss_render._C.get_render_schedule(nums, num_bins)
+def get_render_schedule(nums_tensor, num_bins):
+    return meta_gauss_render._C.get_render_schedule(nums_tensor, num_bins)

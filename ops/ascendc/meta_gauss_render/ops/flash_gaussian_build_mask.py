@@ -26,6 +26,7 @@ class FlashGaussianBuildMask(Function):
                 opacity: torch.Tensor,
                 conics: torch.Tensor,
                 covars2d: torch.Tensor,
+                depths: torch.Tensor,
                 cnt: torch.Tensor,
                 tile_grid: torch.Tensor,
                 image_width,
@@ -35,17 +36,18 @@ class FlashGaussianBuildMask(Function):
         if opacity is None:
             raise ValueError("Opacity must be Tensor while using FlashGS.")
 
-        mask = meta_gauss_render._C.flash_gaussian_build_mask(
+        tile_sum, tile_offset, tile_depths, gauss_index = meta_gauss_render._C.flash_gaussian_build_mask(
             means2d,
             opacity,
             conics,
             covars2d,
+            depths,
             cnt,
             tile_grid,
             float(image_width),
             float(image_height),
             tile_size
         )
-        return mask
+        return tile_sum, tile_offset, tile_depths, gauss_index
 
 flash_gaussian_build_mask = FlashGaussianBuildMask.apply

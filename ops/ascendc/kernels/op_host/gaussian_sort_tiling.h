@@ -19,16 +19,13 @@
 
 namespace optiling {
 BEGIN_TILING_DATA_DEF(GaussianSortTilingData)
-TILING_DATA_FIELD_DEF(uint32_t, nGauss);
-TILING_DATA_FIELD_DEF(uint32_t, ubSize);
-TILING_DATA_FIELD_DEF(uint32_t, formerNum);       // mask阶段整核个数
-TILING_DATA_FIELD_DEF(uint32_t, formerTileNum);   // mask阶段整核处理Tile个数
-TILING_DATA_FIELD_DEF(uint32_t, tailTileNum);     // mask阶段尾核处理Tile个数
-TILING_DATA_FIELD_DEF(uint32_t, maskLoopNum);     // mask阶段循环次数
-TILING_DATA_FIELD_DEF(uint32_t, maskNumPerLoop);  // mask整块处理高斯球个数
-TILING_DATA_FIELD_DEF(uint32_t, maskTailNum);     // mask尾块处理高斯球个数
-TILING_DATA_FIELD_DEF(uint32_t, maskAlignedNum);  // mask尾块对齐时补齐高斯球数
+TILING_DATA_FIELD_DEF(uint32_t, batchSize);
+TILING_DATA_FIELD_DEF(uint32_t, cameraNum);
+TILING_DATA_FIELD_DEF(uint32_t, tileNum);
+TILING_DATA_FIELD_DEF(uint32_t, gaussNum);
+TILING_DATA_FIELD_DEF(uint32_t, scheduleNum);
 TILING_DATA_FIELD_DEF(uint32_t, maxSortNum);      // UB单次最大支持排序高斯球数
+TILING_DATA_FIELD_DEF(uint32_t, maxMaskNum);      // 最大高斯球相交数
 END_TILING_DATA_DEF;
 
 REGISTER_TILING_DATA_CLASS(GaussianSort, GaussianSortTilingData)

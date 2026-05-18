@@ -14,9 +14,19 @@ import meta_gauss_render._C
 
 class GaussianSort(Function):
     @staticmethod
-    def forward(ctx, all_in_mask: torch.Tensor, depths: torch.Tensor):
-        sorted_gs_ids, tile_offsets = meta_gauss_render._C.gaussian_sort(all_in_mask, depths)
-        return sorted_gs_ids, tile_offsets
+    def forward(
+        ctx,
+        lb_sched: torch.Tensor,
+        gaussian_cnt: torch.Tensor,
+        depths: torch.Tensor,
+        gs_ids: torch.Tensor,
+        sorted_offset: torch.Tensor,
+        max_tile_gauss: int,
+    ):
+        sorted_gs_ids = meta_gauss_render._C.gaussian_sort(
+            lb_sched, gaussian_cnt, depths, gs_ids, sorted_offset, max_tile_gauss
+        )
+        return sorted_gs_ids
 
 
 gaussian_sort = GaussianSort.apply

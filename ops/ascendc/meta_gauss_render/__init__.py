@@ -2,7 +2,7 @@ __all__ = [
     "projection_three_dims_gaussian_fused",
     "calc_render",
     "gaussian_sort",
-    "get_render_schedule_cpp",
+    "smart_get_render_schedule_cpp",
     "spherical_harmonics",
     "flash_gaussian_build_mask",
     "gaussian_filter",
@@ -14,7 +14,7 @@ import meta_gauss_render._C
 from .ops.projection_three_dims_gaussian_fused import projection_three_dims_gaussian_fused
 from .ops.calc_render import calc_render
 from .ops.gaussian_sort import gaussian_sort
-from .ops.get_render_schedule import get_render_schedule_cpp
+from .ops.get_render_schedule import get_render_schedule
 from .ops.spherical_harmonics import spherical_harmonics
 from .ops.flash_gaussian_build_mask import flash_gaussian_build_mask
 from .ops.gaussian_filter import gaussian_filter
