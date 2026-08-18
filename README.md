@@ -1,6 +1,20 @@
-# cann-recipes-spatial-intelligence
+# CANN Recipes for Spatial Intelligence
+> **说明**
+>
+> 本仓库已停止维护并进入**归档**状态，不再新增样例或功能。仓库中的代码和文档仅作为历史参考，
+> 请前往 [cann-recipes-embodied-ai](https://gitcode.com/cann/cann-recipes-embodied-ai) 获取最新样例实现、文档与技术支持。
 
-## 🚀Latest News
+## 🔀样例迁移入口
+
+| 原样例 | 新维护地址 |
+|--------|--------------|
+| VGGT | [3d_vision/vggt](https://gitcode.com/cann/cann-recipes-embodied-ai/tree/master/3d_vision/vggt) |
+| Hunyuan3D | [3d_vision/Hunyuan3D](https://gitcode.com/cann/cann-recipes-embodied-ai/tree/master/3d_vision/Hunyuan3D) |
+| 3DGS | [3d_vision/gaussian_splatting](https://gitcode.com/cann/cann-recipes-embodied-ai/tree/master/3d_vision/gaussian_splatting) |
+
+
+## 📰历史发布记录
+
 - [2025/12] 3DGS算法模型在昇腾Atlas A2系列上已支持训练和推理，代码已开源。
 - [2025/11] Hunyuan3D模型在昇腾Atlas A2系列上已支持推理，代码已开源。
 - [2025/11] VGGT模型在昇腾Atlas A2系列上已支持推理，代码已开源。
@@ -49,7 +63,7 @@ cann-recipes-spatial-intelligence仓库旨在针对空间智能业务中的典�
 
 ## 📝相关信息
 
-- [贡献指南](./CONTRIBUTION.md)
+- [贡献指南](https://gitcode.com/cann/cann-recipes-embodied-ai/blob/master/CONTRIBUTION.md)
 - [许可证](./LICENSE)
     
     cann-recipes-spatial-intelligence仓涉及的模型，如模型目录下存在License的以该License为准。如模型目录下不存在License的，遵循Apache 2.0许可证，对应协议文本可查阅[LICENSE](./LICENSE)
