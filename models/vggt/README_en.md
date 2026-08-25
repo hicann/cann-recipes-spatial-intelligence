@@ -91,10 +91,10 @@ This repo provides script to test the functionality and the performance of VGGT 
    ```shell
     python demo_infer.py --ckpt VGGT_model_W8A8.pt --enableW8A8
    ```
-## Accurancy Benchmark
-This repo provides accurancy benchmark to evaluate the VGGT model on NPU. The full benchmark include three programs to test the accurancy of VGGT on Pose Evaluation, Point Map Evaluation and Depth Evaluation. 
+## Accuracy Benchmark
+This repo provides accuracy benchmark to evaluate the VGGT model on NPU. The full benchmark include three programs to test the accuracy of VGGT on Pose Evaluation, Point Map Evaluation and Depth Evaluation. 
 
-Since the full dataste of benchmark is large, we can initially test the accurancy of VGGT model in Pose Evaluation with the subset of the full Co3DV2 dataset.
+Since the full dataste of benchmark is large, we can initially test the accuracy of VGGT model in Pose Evaluation with the subset of the full Co3DV2 dataset.
 
 ### Dataset Preparation:
 1. Download data `CO3D_apple.zip` and data `CO3D_backpack.zip` from [CO3D website](https://ai.meta.com/datasets/co3d-downloads/) and unzip them to `datasets/co3d/co3d_data/`.
@@ -113,7 +113,7 @@ Since the full dataste of benchmark is large, we can initially test the accuranc
    cd eval/pose_evaluation/dataset_prepare
    python preprocess_co3d.py --category all --co3d_v2_dir $VGGT_DIR/datasets/co3d/co3d_data/ --output_dir $VGGT_DIR/datasets/co3d/co3d_anno/ 
     ```
-### Accurancy Measurement
+### Accuracy Measurement
 - Execute the benchmark program:
 -   * Use vggt bf16 model:
     ```shell
@@ -122,7 +122,7 @@ Since the full dataste of benchmark is large, we can initially test the accuranc
     python eval_co3d.py --co3d_dir $VGGT_DIR/datasets/co3d/co3d_data/
         --co3d_anno_dir $VGGT_DIR/datasets/co3d/co3d_anno/  --ckpt $VGGT_DIR/ckpt/model.pt
     ```
-    * Currently, the bf16 model measurement accurancy is about 0.911.
+    * Currently, the bf16 model measurement accuracy is about 0.911.
     
 -   * Use vggt int8 model:
     ```shell
@@ -131,4 +131,4 @@ Since the full dataste of benchmark is large, we can initially test the accuranc
     python eval_co3d.py --co3d_dir $VGGT_DIR/datasets/co3d/co3d_data/
         --co3d_anno_dir $VGGT_DIR/datasets/co3d/co3d_anno/  --ckpt VGGT_model_W8A8.pt --enableW8A8
     ```
-    * Currently, the int8 model measurement accurancy is about 0.907.
+    * Currently, the int8 model measurement accuracy is about 0.907.
